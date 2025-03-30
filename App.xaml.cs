@@ -10,7 +10,13 @@ namespace AIInterviewAssistant.WPF
             
             // Установка начальных настроек
             Properties["MaximumRecordLengthInSeconds"] = 20;
-            Properties["GigaChatToken"] = "YzUyODUxODYtOThjNC00ZGE3LWE1ZDgtZmM1OGY0YzJlMWZjOjkwNDdiMmZiLWVhZTgtNDRlMC1iYzJjLTI0NjM5OTU4MWVhNA==";
+            
+            // Настройки GigaChat API
+            Properties["GigaChatClientId"] = "c5285186-98c4-4da7-a5d8-fc58f4c2e1fc";
+            Properties["GigaChatClientSecret"] = "716009ee-6d04-400b-b95a-308d2f621526";
+            Properties["GigaChatScope"] = "GIGACHAT_API_PERS";
+            
+            // Шаблон начального промпта
             Properties["InitialPromptTemplate"] = "Ты профессиональный {0}. Ты проходишь собеседование. Сейчас я буду задавать вопросы, а тебе нужно на них давать ответ.";
         }
     }

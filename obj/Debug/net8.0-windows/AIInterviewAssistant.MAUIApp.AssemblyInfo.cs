@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("AIInterviewAssistant.MAUIApp")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6001d11204d5eedb0b13b58cba37b78ee2c380ea")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+7369103019e4291f91e244b6bf434f594a0395af")]
 [assembly: System.Reflection.AssemblyProductAttribute("AIInterviewAssistant.MAUIApp")]
 [assembly: System.Reflection.AssemblyTitleAttribute("AIInterviewAssistant.MAUIApp")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

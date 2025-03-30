@@ -1,3 +1,4 @@
+using System;
 using System.Windows;
 using AIInterviewAssistant.WPF.Models;
 using AIInterviewAssistant.WPF.Services;
@@ -7,6 +8,7 @@ using SharpHook;
 using SharpHook.Native;
 using System.Text.Json;
 using System.IO;
+using System.Threading.Tasks;
 
 namespace AIInterviewAssistant.WPF
 {
@@ -14,8 +16,8 @@ namespace AIInterviewAssistant.WPF
     {
         private readonly IRecognizeService _recognizeService;
         private readonly IAIService _aiService;
-        private IWaveIn? _micCapture;
-        private WasapiLoopbackCapture? _desktopCapture;
+        private IWaveIn _micCapture;
+        private WasapiLoopbackCapture _desktopCapture;
         private WaveFileWriter? _desktopAudioWriter;
         private WaveFileWriter? _micAudioWriter;
         private bool _inProgress;
@@ -49,103 +51,188 @@ namespace AIInterviewAssistant.WPF
                 return;
             }
             
-            LoadButton.IsEnabled = false;
-            StatusLabel.Content = "Model is loading, please wait...";
-            
             try
             {
-                await Task.Run(() => _recognizeService.LoadModel(ModelPathTextBox.Text));
+                // В UI потоке отключаем кнопку и обновляем статус
+                LoadButton.IsEnabled = false;
+                StatusLabel.Content = "Проверка авторизации в GigaChat...";
                 
-                Dispatcher.Invoke(() => {
-                    StatusLabel.Content = "Model loaded";
-                });
-                
+                // Сначала проверяем авторизацию GigaChat
                 var authSuccess = await _aiService.AuthAsync();
+                
+                // В UI потоке обновляем статус
                 if (!authSuccess)
                 {
                     Dispatcher.Invoke(() => {
-                        StatusLabel.Content = "AI helper auth fail";
+                        StatusLabel.Content = "Ошибка авторизации в GigaChat. Проверьте настройки.";
                         LoadButton.IsEnabled = true;
                     });
                     return;
                 }
                 
-                string template = Application.Current.Properties["InitialPromptTemplate"] as string ?? 
-                    "Ты профессиональный {0}. Ты проходишь собеседование. Сейчас я буду задавать вопросы, а тебе нужно на них давать ответ.";
-                
-                await _aiService.SendQuestionAsync(string.Format(template, PositionTextBox.Text));
-                
-                _modelLoaded = true;
-                
+                // В UI потоке обновляем статус перед загрузкой модели
                 Dispatcher.Invoke(() => {
+                    StatusLabel.Content = "Авторизация в GigaChat успешна. Загрузка модели...";
+                });
+                
+                // Загружаем модель Vosk в отдельном потоке, но не обновляем UI в этом потоке
+                string modelPath = ModelPathTextBox.Text;
+                await Task.Run(() => {
+                    try {
+                        _recognizeService.LoadModel(modelPath);
+                    }
+                    catch (Exception loadEx) {
+                        throw new Exception($"Ошибка загрузки модели: {loadEx.Message}", loadEx);
+                    }
+                });
+                
+                // После загрузки модели обновляем UI в UI потоке
+                Dispatcher.Invoke(() => {
+                    StatusLabel.Content = "Модель загружена. Отправка начального промпта...";
+                });
+                
+                // Отправляем начальный промпт
+                string prompt = string.Format(
+                    Application.Current.Properties["InitialPromptTemplate"] as string ?? 
+                    "Ты профессиональный {0}. Ты проходишь собеседование.", 
+                    PositionTextBox.Text);
+                
+                string response = await _aiService.SendQuestionAsync(prompt);
+                
+                // Обрабатываем ответ и обновляем UI в UI потоке
+                Dispatcher.Invoke(() => {
+                    if (string.IsNullOrWhiteSpace(response) || response.StartsWith("Ошибка"))
+                    {
+                        StatusLabel.Content = $"Не удалось отправить начальный промпт: {response}";
+                        LoadButton.IsEnabled = true;
+                        return;
+                    }
+                    
+                    // Устанавливаем состояние готовности
+                    _modelLoaded = true;
                     SendManuallyButton.IsEnabled = true;
+                    StatusLabel.Content = "Готово к использованию";
+                    OutputTextBox.Text = "Начальный ответ ИИ:\n" + response;
+                    
+                    // Подготавливаем системы записи
                     PrepareDesktopRecording();
                     PrepareMicRecording();
                 });
             }
             catch (Exception ex)
             {
+                // В случае исключения обновляем UI в UI потоке
                 Dispatcher.Invoke(() => {
-                    StatusLabel.Content = $"Error: {ex.Message}";
+                    StatusLabel.Content = $"Ошибка: {ex.Message}";
                     LoadButton.IsEnabled = true;
+                    _modelLoaded = false;
                 });
-                _modelLoaded = false;
             }
         }
 
         private async void SendManuallyButton_Click(object sender, RoutedEventArgs e)
         {
+            if (!Dispatcher.CheckAccess())
+            {
+                Dispatcher.Invoke(() => SendManuallyButton_Click(sender, e));
+                return;
+            }
+            
             if (_modelLoaded && !string.IsNullOrWhiteSpace(InputTextBox.Text))
             {
-                SendManuallyButton.IsEnabled = false;
                 try
                 {
-                    var response = await _aiService.SendQuestionAsync(InputTextBox.Text);
-                    Dispatcher.Invoke(() => {
+                    // Отключаем кнопку во время обработки запроса
+                    SendManuallyButton.IsEnabled = false;
+                    StatusLabel.Content = "Отправка запроса...";
+                    
+                    // Отправляем запрос к GigaChat
+                    string response = await _aiService.SendQuestionAsync(InputTextBox.Text);
+                    
+                    // Проверяем ответ и обновляем UI (мы уже в UI потоке)
+                    if (string.IsNullOrWhiteSpace(response) || response.StartsWith("Ошибка"))
+                    {
+                        StatusLabel.Content = $"Ошибка получения ответа: {response}";
+                    }
+                    else
+                    {
                         OutputTextBox.Text = response;
-                        SendManuallyButton.IsEnabled = true;
-                    });
+                        StatusLabel.Content = "Ответ получен";
+                    }
                 }
                 catch (Exception ex)
                 {
-                    Dispatcher.Invoke(() => {
-                        StatusLabel.Content = $"Error sending message: {ex.Message}";
-                        SendManuallyButton.IsEnabled = true;
-                    });
+                    StatusLabel.Content = $"Исключение: {ex.Message}";
+                }
+                finally
+                {
+                    // Всегда включаем кнопку обратно
+                    SendManuallyButton.IsEnabled = true;
                 }
             }
         }
         
         private async Task RecognizeSpeechAsync(string audioFilePath)
         {
-            Dispatcher.Invoke(() => {
-                StatusLabel.Content = "Processing audio...";
-            });
-            
             try
             {
-                var result = await _recognizeService.RecognizeSpeechAsync(audioFilePath);
-                var recognizeSpeech = JsonSerializer.Deserialize<RecognizeSpeechDto>(result);
+                // Обновляем UI в UI потоке
+                await Dispatcher.InvokeAsync(() => {
+                    StatusLabel.Content = "Распознавание речи...";
+                });
                 
-                Dispatcher.Invoke(() => {
-                    InputTextBox.Text = recognizeSpeech?.Text ?? string.Empty;
-                    StatusLabel.Content = "Audio processed, generating response...";
-                    
-                    if (!string.IsNullOrWhiteSpace(InputTextBox.Text))
+                // Выполняем распознавание речи в фоновом потоке
+                string result = await Task.Run(() => _recognizeService.RecognizeSpeechAsync(audioFilePath));
+                
+                // Обрабатываем результат в UI потоке
+                await Dispatcher.InvokeAsync(async () => {
+                    try
                     {
-                        SendManuallyButton_Click(this, new RoutedEventArgs());
+                        // Десериализуем результат распознавания
+                        var recognizeSpeech = JsonSerializer.Deserialize<RecognizeSpeechDto>(result);
+                        
+                        if (recognizeSpeech != null && !string.IsNullOrWhiteSpace(recognizeSpeech.Text))
+                        {
+                            InputTextBox.Text = recognizeSpeech.Text;
+                            
+                            // Если есть текст, отправляем его в AI
+                            if (_modelLoaded && SendManuallyButton.IsEnabled)
+                            {
+                                SendManuallyButton_Click(this, new RoutedEventArgs());
+                            }
+                        }
+                        else
+                        {
+                            StatusLabel.Content = "Распознавание не дало результатов";
+                        }
                     }
-                    else
+                    catch (JsonException jsonEx)
                     {
-                        StatusLabel.Content = "No text recognized";
+                        StatusLabel.Content = $"Ошибка десериализации: {jsonEx.Message}";
                     }
                 });
             }
             catch (Exception ex)
             {
-                Dispatcher.Invoke(() => {
-                    StatusLabel.Content = $"Recognition error: {ex.Message}";
+                // Обрабатываем исключения в UI потоке
+                await Dispatcher.InvokeAsync(() => {
+                    StatusLabel.Content = $"Ошибка распознавания: {ex.Message}";
                 });
+            }
+            finally
+            {
+                // Пытаемся удалить временный файл
+                try
+                {
+                    if (File.Exists(audioFilePath))
+                    {
+                        File.Delete(audioFilePath);
+                    }
+                }
+                catch
+                {
+                    // Игнорируем ошибки при удалении временных файлов
+                }
             }
         }
         
@@ -154,139 +241,159 @@ namespace AIInterviewAssistant.WPF
             if (!_modelLoaded)
                 return;
         
-            switch (e.Data.KeyCode)
-            {
-                case KeyCode.VcLeft:
-                    // Record audio desktop
-                    if (_inProgress)
-                        break;
+            // Все операции с UI элементами должны выполняться в UI потоке
+            Dispatcher.Invoke(() => {
+                switch (e.Data.KeyCode)
+                {
+                    case KeyCode.VcLeft:
+                        // Record audio desktop
+                        if (_inProgress)
+                            break;
                 
-                    _inProgress = true;
-                    
-                    Dispatcher.Invoke(() => {
+                        _inProgress = true;
                         PrepareDesktopRecording();
-                        StatusLabel.Content = "Recording desktop audio...";
-                        
                         var outputDesktopFilePath = GetTempFileName();
-                        _desktopAudioWriter = new WaveFileWriter(outputDesktopFilePath, _desktopCapture!.WaveFormat);
-                        
-                        _desktopCapture!.DataAvailable += (s, args) =>
+                        _desktopAudioWriter = new WaveFileWriter(outputDesktopFilePath, _desktopCapture.WaveFormat);
+                        _desktopCapture.DataAvailable += (sender, e) =>
                         {
-                            if (_desktopAudioWriter != null)
+                            if (_desktopAudioWriter == null)
+                                return;
+                                
+                            _desktopAudioWriter.Write(e.Buffer, 0, e.BytesRecorded);
+                            if (_desktopAudioWriter.Position > _desktopCapture.WaveFormat.AverageBytesPerSecond * 
+                                (int)Application.Current.Properties["MaximumRecordLengthInSeconds"])
                             {
-                                _desktopAudioWriter.Write(args.Buffer, 0, args.BytesRecorded);
-                                int maxLength = Application.Current.Properties["MaximumRecordLengthInSeconds"] is int length ? length : 20;
-                                if (_desktopAudioWriter.Position > _desktopCapture.WaveFormat.AverageBytesPerSecond * maxLength)
-                                {
-                                    _desktopCapture.StopRecording();
-                                }
+                                _desktopCapture.StopRecording();
                             }
                         };
 
-                        _desktopCapture!.RecordingStopped += async (s, args) =>
+                        _desktopCapture.RecordingStopped += async (sender, e) =>
                         {
-                            var captureDevice = _desktopCapture;
-                            var writer = _desktopAudioWriter;
-                            var filePath = outputDesktopFilePath;
+                            string filePath = outputDesktopFilePath;
                             
-                            _desktopCapture = null;
-                            _desktopAudioWriter = null;
-                            
-                            if (captureDevice != null)
-                                captureDevice.Dispose();
+                            try
+                            {
+                                if (_desktopAudioWriter != null)
+                                {
+                                    await _desktopAudioWriter.DisposeAsync();
+                                    _desktopAudioWriter = null;
+                                }
                                 
-                            if (writer != null)
-                                await writer.DisposeAsync();
+                                if (_desktopCapture != null)
+                                {
+                                    _desktopCapture.Dispose();
+                                }
                                 
-                            await RecognizeSpeechAsync(filePath);
+                                // Обновляем статус в UI потоке
+                                await Dispatcher.InvokeAsync(() => {
+                                    StatusLabel.Content = "Обработка аудио с рабочего стола...";
+                                });
+                                
+                                // Выполняем распознавание
+                                await RecognizeSpeechAsync(filePath);
+                            }
+                            catch (Exception ex)
+                            {
+                                await Dispatcher.InvokeAsync(() => {
+                                    StatusLabel.Content = $"Ошибка обработки записи: {ex.Message}";
+                                });
+                            }
                         };
 
-                        _desktopCapture!.StartRecording();
-                    });
-                    break;
-                
-                case KeyCode.VcRight:
-                    // Record audio mic
-                    if (_inProgress)
+                        _desktopCapture.StartRecording();
+                        StatusLabel.Content = "Запись аудио с рабочего стола...";
                         break;
-                
-                    _inProgress = true;
                     
-                    Dispatcher.Invoke(() => {
+                    case KeyCode.VcRight:
+                        // Record audio mic
+                        if (_inProgress)
+                            break;
+                
+                        _inProgress = true;
                         PrepareMicRecording();
-                        StatusLabel.Content = "Recording microphone...";
-                        
                         var outputMicFilePath = GetTempFileName();
-                        _micAudioWriter = new WaveFileWriter(outputMicFilePath, _micCapture!.WaveFormat);
-                        
-                        _micCapture!.DataAvailable += (s, args) =>
+                        _micAudioWriter = new WaveFileWriter(outputMicFilePath, _micCapture.WaveFormat);
+                        _micCapture.DataAvailable += (sender, e) =>
                         {
-                            if (_micAudioWriter != null)
+                            if (_micAudioWriter == null)
+                                return;
+                                
+                            _micAudioWriter.Write(e.Buffer, 0, e.BytesRecorded);
+                            if (_micAudioWriter.Position > _micCapture.WaveFormat.AverageBytesPerSecond * 
+                                (int)Application.Current.Properties["MaximumRecordLengthInSeconds"])
                             {
-                                _micAudioWriter.Write(args.Buffer, 0, args.BytesRecorded);
-                                int maxLength = Application.Current.Properties["MaximumRecordLengthInSeconds"] is int length ? length : 20;
-                                if (_micAudioWriter.Position > _micCapture.WaveFormat.AverageBytesPerSecond * maxLength)
-                                {
-                                    _micCapture.StopRecording();
-                                }
+                                _micCapture.StopRecording();
                             }
                         };
 
-                        _micCapture!.RecordingStopped += async (s, args) =>
+                        _micCapture.RecordingStopped += async (sender, e) =>
                         {
-                            var captureDevice = _micCapture;
-                            var writer = _micAudioWriter;
-                            var filePath = outputMicFilePath;
+                            string filePath = outputMicFilePath;
                             
-                            _micCapture = null;
-                            _micAudioWriter = null;
-                            
-                            if (captureDevice != null)
-                                captureDevice.Dispose();
+                            try
+                            {
+                                if (_micAudioWriter != null)
+                                {
+                                    await _micAudioWriter.DisposeAsync();
+                                    _micAudioWriter = null;
+                                }
                                 
-                            if (writer != null)
-                                await writer.DisposeAsync();
+                                if (_micCapture != null)
+                                {
+                                    _micCapture.Dispose();
+                                }
                                 
-                            await RecognizeSpeechAsync(filePath);
+                                // Обновляем статус в UI потоке
+                                await Dispatcher.InvokeAsync(() => {
+                                    StatusLabel.Content = "Обработка аудио с микрофона...";
+                                });
+                                
+                                // Выполняем распознавание
+                                await RecognizeSpeechAsync(filePath);
+                            }
+                            catch (Exception ex)
+                            {
+                                await Dispatcher.InvokeAsync(() => {
+                                    StatusLabel.Content = $"Ошибка обработки записи: {ex.Message}";
+                                });
+                            }
                         };
 
-                        _micCapture!.StartRecording();
-                    });
-                    break;
-            }
+                        _micCapture.StartRecording();
+                        StatusLabel.Content = "Запись аудио с микрофона...";
+                        break;
+                }
+            });
         }
 
         public void OnKeyReleased(object? sender, KeyboardHookEventArgs e)
         {
             if (!_modelLoaded)
                 return;
-                
-            switch (e.Data.KeyCode)
-            {
-                case KeyCode.VcLeft:
-                    // Stop audio desktop
-                    if (_inProgress)
-                    {
-                        _inProgress = false;
-                        Dispatcher.Invoke(() => {
-                            StatusLabel.Content = "Stopping desktop recording...";
+            
+            // Все операции с UI элементами должны выполняться в UI потоке
+            Dispatcher.Invoke(() => {
+                switch (e.Data.KeyCode)
+                {
+                    case KeyCode.VcLeft:
+                        // Stop audio desktop
+                        if (_inProgress)
+                        {
+                            _inProgress = false;
                             _desktopCapture?.StopRecording();
-                        });
-                    }
-                    break;
-                    
-                case KeyCode.VcRight:
-                    // Stop audio mic
-                    if (_inProgress)
-                    {
-                        _inProgress = false;
-                        Dispatcher.Invoke(() => {
-                            StatusLabel.Content = "Stopping microphone recording...";
+                        }
+                        break;
+                        
+                    case KeyCode.VcRight:
+                        // Stop audio mic
+                        if (_inProgress)
+                        {
+                            _inProgress = false;
                             _micCapture?.StopRecording();
-                        });
-                    }
-                    break;
-            }
+                        }
+                        break;
+                }
+            });
         }
         
         private string GetTempFileName()
@@ -298,6 +405,8 @@ namespace AIInterviewAssistant.WPF
 
         private void PrepareMicRecording()
         {
+            DisposeMicCapture();
+            
             var waveIn = new WaveInEvent();
             waveIn.DeviceNumber = -1; // default system device
             waveIn.WaveFormat = new WaveFormat(16000, 1);
@@ -306,9 +415,55 @@ namespace AIInterviewAssistant.WPF
 
         private void PrepareDesktopRecording()
         {
+            DisposeDesktopCapture();
+            
             var capture = new WasapiLoopbackCapture();
             capture.WaveFormat = new WaveFormat(16000, 1);
             _desktopCapture = capture;
+        }
+        
+        private void DisposeMicCapture()
+        {
+            if (_micCapture != null)
+            {
+                _micCapture.Dispose();
+                _micCapture = null;
+            }
+        }
+        
+        private void DisposeDesktopCapture()
+        {
+            if (_desktopCapture != null)
+            {
+                _desktopCapture.Dispose();
+                _desktopCapture = null;
+            }
+        }
+        
+        protected override void OnClosed(EventArgs e)
+        {
+            base.OnClosed(e);
+            
+            // Освобождаем ресурсы при закрытии приложения
+            if (_recognizeService is IDisposable disposable)
+            {
+                disposable.Dispose();
+            }
+            
+            DisposeMicCapture();
+            DisposeDesktopCapture();
+            
+            if (_micAudioWriter != null)
+            {
+                _micAudioWriter.Dispose();
+                _micAudioWriter = null;
+            }
+            
+            if (_desktopAudioWriter != null)
+            {
+                _desktopAudioWriter.Dispose();
+                _desktopAudioWriter = null;
+            }
         }
     }
 }

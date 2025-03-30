@@ -1,5 +1,6 @@
 using AIInterviewAssistant.WPF.Services.Interfaces;
 using Vosk;
+using System.IO;
 
 namespace AIInterviewAssistant.WPF.Services
 {

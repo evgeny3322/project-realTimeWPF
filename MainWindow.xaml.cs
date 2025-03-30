@@ -14,8 +14,8 @@ namespace AIInterviewAssistant.WPF
     {
         private readonly IRecognizeService _recognizeService;
         private readonly IAIService _aiService;
-        private IWaveIn _micCapture;
-        private WasapiLoopbackCapture _desktopCapture;
+        private IWaveIn? _micCapture;
+        private WasapiLoopbackCapture? _desktopCapture;
         private WaveFileWriter? _desktopAudioWriter;
         private WaveFileWriter? _micAudioWriter;
         private bool _inProgress;
@@ -55,28 +55,40 @@ namespace AIInterviewAssistant.WPF
             try
             {
                 await Task.Run(() => _recognizeService.LoadModel(ModelPathTextBox.Text));
-                StatusLabel.Content = "Model loaded";
+                
+                Dispatcher.Invoke(() => {
+                    StatusLabel.Content = "Model loaded";
+                });
                 
                 var authSuccess = await _aiService.AuthAsync();
                 if (!authSuccess)
                 {
-                    StatusLabel.Content = "AI helper auth fail";
-                    LoadButton.IsEnabled = true;
+                    Dispatcher.Invoke(() => {
+                        StatusLabel.Content = "AI helper auth fail";
+                        LoadButton.IsEnabled = true;
+                    });
                     return;
                 }
                 
-                await _aiService.SendQuestionAsync(
-                    string.Format(Application.Current.Properties["InitialPromptTemplate"] as string, PositionTextBox.Text));
+                string template = Application.Current.Properties["InitialPromptTemplate"] as string ?? 
+                    "Ты профессиональный {0}. Ты проходишь собеседование. Сейчас я буду задавать вопросы, а тебе нужно на них давать ответ.";
+                
+                await _aiService.SendQuestionAsync(string.Format(template, PositionTextBox.Text));
                 
                 _modelLoaded = true;
-                SendManuallyButton.IsEnabled = true;
-                PrepareDesktopRecording();
-                PrepareMicRecording();
+                
+                Dispatcher.Invoke(() => {
+                    SendManuallyButton.IsEnabled = true;
+                    PrepareDesktopRecording();
+                    PrepareMicRecording();
+                });
             }
             catch (Exception ex)
             {
-                StatusLabel.Content = $"Error: {ex.Message}";
-                LoadButton.IsEnabled = true;
+                Dispatcher.Invoke(() => {
+                    StatusLabel.Content = $"Error: {ex.Message}";
+                    LoadButton.IsEnabled = true;
+                });
                 _modelLoaded = false;
             }
         }
@@ -85,21 +97,47 @@ namespace AIInterviewAssistant.WPF
         {
             if (_modelLoaded && !string.IsNullOrWhiteSpace(InputTextBox.Text))
             {
-                OutputTextBox.Text = await _aiService.SendQuestionAsync(InputTextBox.Text);
+                SendManuallyButton.IsEnabled = false;
+                try
+                {
+                    var response = await _aiService.SendQuestionAsync(InputTextBox.Text);
+                    Dispatcher.Invoke(() => {
+                        OutputTextBox.Text = response;
+                        SendManuallyButton.IsEnabled = true;
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Dispatcher.Invoke(() => {
+                        StatusLabel.Content = $"Error sending message: {ex.Message}";
+                        SendManuallyButton.IsEnabled = true;
+                    });
+                }
             }
         }
         
         private async Task RecognizeSpeechAsync(string audioFilePath)
         {
-            var result = await _recognizeService.RecognizeSpeechAsync(audioFilePath);
+            Dispatcher.Invoke(() => {
+                StatusLabel.Content = "Processing audio...";
+            });
+            
             try
             {
+                var result = await _recognizeService.RecognizeSpeechAsync(audioFilePath);
                 var recognizeSpeech = JsonSerializer.Deserialize<RecognizeSpeechDto>(result);
-                InputTextBox.Dispatcher.Invoke(() => {
+                
+                Dispatcher.Invoke(() => {
                     InputTextBox.Text = recognizeSpeech?.Text ?? string.Empty;
+                    StatusLabel.Content = "Audio processed, generating response...";
+                    
                     if (!string.IsNullOrWhiteSpace(InputTextBox.Text))
                     {
                         SendManuallyButton_Click(this, new RoutedEventArgs());
+                    }
+                    else
+                    {
+                        StatusLabel.Content = "No text recognized";
                     }
                 });
             }
@@ -124,29 +162,47 @@ namespace AIInterviewAssistant.WPF
                         break;
                 
                     _inProgress = true;
-                    PrepareDesktopRecording();
-                    var outputDesktopFilePath = GetTempFileName();
-                    _desktopAudioWriter = new WaveFileWriter(outputDesktopFilePath, _desktopCapture.WaveFormat);
-                    _desktopCapture.DataAvailable += (sender, e) =>
-                    {
-                        _desktopAudioWriter.Write(e.Buffer, 0, e.BytesRecorded);
-                        if (_desktopAudioWriter.Position > _desktopCapture.WaveFormat.AverageBytesPerSecond * 
-                            (int)Application.Current.Properties["MaximumRecordLengthInSeconds"])
+                    
+                    Dispatcher.Invoke(() => {
+                        PrepareDesktopRecording();
+                        StatusLabel.Content = "Recording desktop audio...";
+                        
+                        var outputDesktopFilePath = GetTempFileName();
+                        _desktopAudioWriter = new WaveFileWriter(outputDesktopFilePath, _desktopCapture!.WaveFormat);
+                        
+                        _desktopCapture!.DataAvailable += (s, args) =>
                         {
-                            _desktopCapture.StopRecording();
-                        }
-                    };
+                            if (_desktopAudioWriter != null)
+                            {
+                                _desktopAudioWriter.Write(args.Buffer, 0, args.BytesRecorded);
+                                int maxLength = Application.Current.Properties["MaximumRecordLengthInSeconds"] is int length ? length : 20;
+                                if (_desktopAudioWriter.Position > _desktopCapture.WaveFormat.AverageBytesPerSecond * maxLength)
+                                {
+                                    _desktopCapture.StopRecording();
+                                }
+                            }
+                        };
 
-                    _desktopCapture.RecordingStopped += async (sender, e) =>
-                    {
-                        _desktopCapture.Dispose();
-                        await _desktopAudioWriter.DisposeAsync();
-                        _desktopAudioWriter = null;
-                        await RecognizeSpeechAsync(outputDesktopFilePath);
-                    };
+                        _desktopCapture!.RecordingStopped += async (s, args) =>
+                        {
+                            var captureDevice = _desktopCapture;
+                            var writer = _desktopAudioWriter;
+                            var filePath = outputDesktopFilePath;
+                            
+                            _desktopCapture = null;
+                            _desktopAudioWriter = null;
+                            
+                            if (captureDevice != null)
+                                captureDevice.Dispose();
+                                
+                            if (writer != null)
+                                await writer.DisposeAsync();
+                                
+                            await RecognizeSpeechAsync(filePath);
+                        };
 
-                    _desktopCapture.StartRecording();
-                    Dispatcher.Invoke(() => StatusLabel.Content = "Recording desktop audio...");
+                        _desktopCapture!.StartRecording();
+                    });
                     break;
                 
                 case KeyCode.VcRight:
@@ -155,29 +211,47 @@ namespace AIInterviewAssistant.WPF
                         break;
                 
                     _inProgress = true;
-                    PrepareMicRecording();
-                    var outputMicFilePath = GetTempFileName();
-                    _micAudioWriter = new WaveFileWriter(outputMicFilePath, _micCapture.WaveFormat);
-                    _micCapture.DataAvailable += (sender, e) =>
-                    {
-                        _micAudioWriter.Write(e.Buffer, 0, e.BytesRecorded);
-                        if (_micAudioWriter.Position > _micCapture.WaveFormat.AverageBytesPerSecond * 
-                            (int)Application.Current.Properties["MaximumRecordLengthInSeconds"])
+                    
+                    Dispatcher.Invoke(() => {
+                        PrepareMicRecording();
+                        StatusLabel.Content = "Recording microphone...";
+                        
+                        var outputMicFilePath = GetTempFileName();
+                        _micAudioWriter = new WaveFileWriter(outputMicFilePath, _micCapture!.WaveFormat);
+                        
+                        _micCapture!.DataAvailable += (s, args) =>
                         {
-                            _micCapture.StopRecording();
-                        }
-                    };
+                            if (_micAudioWriter != null)
+                            {
+                                _micAudioWriter.Write(args.Buffer, 0, args.BytesRecorded);
+                                int maxLength = Application.Current.Properties["MaximumRecordLengthInSeconds"] is int length ? length : 20;
+                                if (_micAudioWriter.Position > _micCapture.WaveFormat.AverageBytesPerSecond * maxLength)
+                                {
+                                    _micCapture.StopRecording();
+                                }
+                            }
+                        };
 
-                    _micCapture.RecordingStopped += async (sender, e) =>
-                    {
-                        _micCapture.Dispose();
-                        await _micAudioWriter.DisposeAsync();
-                        _micAudioWriter = null;
-                        await RecognizeSpeechAsync(outputMicFilePath);
-                    };
+                        _micCapture!.RecordingStopped += async (s, args) =>
+                        {
+                            var captureDevice = _micCapture;
+                            var writer = _micAudioWriter;
+                            var filePath = outputMicFilePath;
+                            
+                            _micCapture = null;
+                            _micAudioWriter = null;
+                            
+                            if (captureDevice != null)
+                                captureDevice.Dispose();
+                                
+                            if (writer != null)
+                                await writer.DisposeAsync();
+                                
+                            await RecognizeSpeechAsync(filePath);
+                        };
 
-                    _micCapture.StartRecording();
-                    Dispatcher.Invoke(() => StatusLabel.Content = "Recording microphone...");
+                        _micCapture!.StartRecording();
+                    });
                     break;
             }
         }
@@ -194,8 +268,10 @@ namespace AIInterviewAssistant.WPF
                     if (_inProgress)
                     {
                         _inProgress = false;
-                        _desktopCapture?.StopRecording();
-                        Dispatcher.Invoke(() => StatusLabel.Content = "Processing desktop audio...");
+                        Dispatcher.Invoke(() => {
+                            StatusLabel.Content = "Stopping desktop recording...";
+                            _desktopCapture?.StopRecording();
+                        });
                     }
                     break;
                     
@@ -204,8 +280,10 @@ namespace AIInterviewAssistant.WPF
                     if (_inProgress)
                     {
                         _inProgress = false;
-                        _micCapture?.StopRecording();
-                        Dispatcher.Invoke(() => StatusLabel.Content = "Processing microphone audio...");
+                        Dispatcher.Invoke(() => {
+                            StatusLabel.Content = "Stopping microphone recording...";
+                            _micCapture?.StopRecording();
+                        });
                     }
                     break;
             }

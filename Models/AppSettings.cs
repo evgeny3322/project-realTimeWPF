@@ -49,7 +49,39 @@ namespace AIInterviewAssistant.WPF.Models
             if (app.Properties.Contains("GigaChatScope"))
                 settings.GigaChatScope = app.Properties["GigaChatScope"] as string ?? "GIGACHAT_API_PERS";
             
-            // Load other settings from properties if they exist
+            // Load hotkeys
+            if (app.Properties.Contains("TakeScreenshotHotkey"))
+                settings.TakeScreenshotHotkey = (KeyCode)app.Properties["TakeScreenshotHotkey"];
+                
+            if (app.Properties.Contains("ShowSolutionHotkey"))
+                settings.ShowSolutionHotkey = (KeyCode)app.Properties["ShowSolutionHotkey"];
+                
+            if (app.Properties.Contains("ShowExplanationHotkey"))
+                settings.ShowExplanationHotkey = (KeyCode)app.Properties["ShowExplanationHotkey"];
+                
+            if (app.Properties.Contains("AlternativeSolutionHotkey"))
+                settings.AlternativeSolutionHotkey = (KeyCode)app.Properties["AlternativeSolutionHotkey"];
+            
+            // Load UI settings
+            if (app.Properties.Contains("OverlayTextSize"))
+                settings.OverlayTextSize = (int)app.Properties["OverlayTextSize"];
+                
+            if (app.Properties.Contains("OverlayTextColor"))
+                settings.OverlayTextColor = app.Properties["OverlayTextColor"] as string ?? "#FF00FF00";
+                
+            if (app.Properties.Contains("OverlayBackgroundColor"))
+                settings.OverlayBackgroundColor = app.Properties["OverlayBackgroundColor"] as string ?? "#80000000";
+            
+            // Load prompt templates
+            if (app.Properties.Contains("SolutionPromptTemplate"))
+                settings.SolutionPromptTemplate = app.Properties["SolutionPromptTemplate"] as string ?? settings.SolutionPromptTemplate;
+                
+            if (app.Properties.Contains("ExplanationPromptTemplate"))
+                settings.ExplanationPromptTemplate = app.Properties["ExplanationPromptTemplate"] as string ?? settings.ExplanationPromptTemplate;
+            
+            // Load other settings
+            if (app.Properties.Contains("HideWhenScreenRecording"))
+                settings.HideWhenScreenRecording = (bool)app.Properties["HideWhenScreenRecording"];
             
             return settings;
         }
@@ -59,11 +91,28 @@ namespace AIInterviewAssistant.WPF.Models
         {
             var app = System.Windows.Application.Current;
             
+            // Save GigaChat settings
             app.Properties["GigaChatClientId"] = GigaChatClientId;
             app.Properties["GigaChatClientSecret"] = GigaChatClientSecret;
             app.Properties["GigaChatScope"] = GigaChatScope;
             
-            // Save other settings to properties
+            // Save hotkeys
+            app.Properties["TakeScreenshotHotkey"] = TakeScreenshotHotkey;
+            app.Properties["ShowSolutionHotkey"] = ShowSolutionHotkey;
+            app.Properties["ShowExplanationHotkey"] = ShowExplanationHotkey;
+            app.Properties["AlternativeSolutionHotkey"] = AlternativeSolutionHotkey;
+            
+            // Save UI settings
+            app.Properties["OverlayTextSize"] = OverlayTextSize;
+            app.Properties["OverlayTextColor"] = OverlayTextColor;
+            app.Properties["OverlayBackgroundColor"] = OverlayBackgroundColor;
+            
+            // Save prompt templates
+            app.Properties["SolutionPromptTemplate"] = SolutionPromptTemplate;
+            app.Properties["ExplanationPromptTemplate"] = ExplanationPromptTemplate;
+            
+            // Save other settings
+            app.Properties["HideWhenScreenRecording"] = HideWhenScreenRecording;
         }
     }
 }

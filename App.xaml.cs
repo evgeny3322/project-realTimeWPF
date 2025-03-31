@@ -22,6 +22,9 @@ namespace AIInterviewAssistant.WPF
             // Настройки горячих клавиш по умолчанию
             Properties["CaptureScreenHotkey"] = SharpHook.Native.KeyCode.VcPrintScreen;
             Properties["ShowSolutionHotkey"] = SharpHook.Native.KeyCode.VcF9;
+            
+            // Настройки для распознавания речи
+            Properties["VoskModelPath"] = System.IO.Path.Combine(System.AppDomain.CurrentDomain.BaseDirectory, "vosk-model");
         }
     }
 }

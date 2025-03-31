@@ -9,6 +9,8 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.IO;
+using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
@@ -22,9 +24,13 @@ namespace AIInterviewAssistant.WPF
         private readonly IOverlayService _overlayService;
         private readonly IScreenCaptureService _screenCaptureService;
         private readonly HotkeyManager _hotkeyManager;
+        private readonly AudioRecordingService _audioRecordingService;
+        private readonly IRecognizeService _recognizeService;
+        
         private ScreenshotData _lastScreenshot;
         private AiResponse _lastSolution;
         private ObservableCollection<HotkeyItem> _hotkeys;
+        private string _lastRecordingPath;
 
         public MainWindow()
         {
@@ -35,6 +41,34 @@ namespace AIInterviewAssistant.WPF
             _overlayService = new OverlayService(true); // Скрывать при записи экрана
             _screenCaptureService = new ScreenCaptureService();
             _hotkeyManager = new HotkeyManager();
+            
+            // Initialize voice recognition services
+            _audioRecordingService = new AudioRecordingService(
+                (int)Application.Current.Properties["MaximumRecordLengthInSeconds"]);
+            _recognizeService = new RecognizeService();
+
+            // Subscribe to recording events
+            _audioRecordingService.RecordingCompleted += OnRecordingCompleted;
+            _audioRecordingService.RecordingTimeUpdated += OnRecordingTimeUpdated;
+
+            // Try to load the Vosk model
+            try
+            {
+                string voskModelPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "vosk-model");
+                if (Directory.Exists(voskModelPath))
+                {
+                    _recognizeService.LoadModel(voskModelPath);
+                    Debug.WriteLine("[INFO] Vosk model loaded successfully");
+                }
+                else
+                {
+                    Debug.WriteLine("[WARN] Vosk model directory not found: " + voskModelPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[ERROR] Failed to load Vosk model: {ex.Message}");
+            }
             
             // Инициализируем коллекцию горячих клавиш
             _hotkeys = new ObservableCollection<HotkeyItem>
@@ -327,6 +361,7 @@ namespace AIInterviewAssistant.WPF
         {
             // Изначально отключаем некоторые кнопки
             SolveCapturedButton.IsEnabled = false;
+            SolveVoiceButton.IsEnabled = false;
             
             // Обновляем обработчики событий
             ScreenshotImage.SourceUpdated += (s, e) =>
@@ -335,12 +370,164 @@ namespace AIInterviewAssistant.WPF
             };
         }
         
+        // Voice Recognition Methods
+        private async void RecordButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (_audioRecordingService.IsRecording)
+            {
+                // Stop recording
+                RecordButton.IsEnabled = false;
+                RecordButton.Content = "Processing...";
+                _audioRecordingService.StopRecording();
+            }
+            else
+            {
+                // Start recording
+                try
+                {
+                    RecordButton.Content = "Stop Recording";
+                    RecordingProgressBar.Value = 0;
+                    RecordingProgressBar.Maximum = (int)Application.Current.Properties["MaximumRecordLengthInSeconds"];
+                    RecordingTimeText.Text = "00:00";
+                    TranscribedTextBox.Text = "Recording...";
+                    SolveVoiceButton.IsEnabled = false;
+                    
+                    await _audioRecordingService.StartRecordingAsync();
+                }
+                catch (Exception ex)
+                {
+                    RecordButton.Content = "Start Recording";
+                    TranscribedTextBox.Text = $"Error starting recording: {ex.Message}";
+                    StatusBarText.Text = $"Error: {ex.Message}";
+                }
+            }
+        }
+
+        private async void OnRecordingCompleted(object sender, string filePath)
+        {
+            _lastRecordingPath = filePath;
+            
+            // Update UI
+            await Dispatcher.InvokeAsync(() =>
+            {
+                RecordButton.Content = "Start Recording";
+                RecordButton.IsEnabled = true;
+                TranscribedTextBox.Text = "Transcribing...";
+                StatusBarText.Text = "Transcribing audio...";
+            });
+            
+            try
+            {
+                // Check if Vosk model is loaded
+                if (_recognizeService == null)
+                {
+                    TranscribedTextBox.Text = "Speech recognition is not available. Vosk model not loaded.";
+                    return;
+                }
+                
+                // Recognize speech
+                var jsonResult = await _recognizeService.RecognizeSpeechAsync(filePath);
+                
+                // Parse JSON result to extract text
+                var options = new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                };
+                
+                var result = JsonSerializer.Deserialize<RecognizeSpeechDto>(jsonResult, options);
+                
+                // Update UI with recognized text
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    if (!string.IsNullOrWhiteSpace(result?.Text))
+                    {
+                        TranscribedTextBox.Text = result.Text;
+                        SolveVoiceButton.IsEnabled = true;
+                        StatusBarText.Text = "Transcription complete";
+                    }
+                    else
+                    {
+                        TranscribedTextBox.Text = "No speech detected. Please try again.";
+                        StatusBarText.Text = "No speech detected";
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    TranscribedTextBox.Text = $"Error transcribing audio: {ex.Message}";
+                    StatusBarText.Text = $"Error: {ex.Message}";
+                });
+                Debug.WriteLine($"[ERROR] Speech recognition error: {ex.Message}");
+            }
+        }
+
+        private void OnRecordingTimeUpdated(object sender, TimeSpan elapsed)
+        {
+            Dispatcher.Invoke(() =>
+            {
+                RecordingTimeText.Text = $"{elapsed.Minutes:00}:{elapsed.Seconds:00}";
+                RecordingProgressBar.Value = elapsed.TotalSeconds;
+            });
+        }
+
+        private async void SolveVoiceButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(TranscribedTextBox.Text) || 
+                TranscribedTextBox.Text == "Transcribed text will appear here..." ||
+                TranscribedTextBox.Text == "Recording..." ||
+                TranscribedTextBox.Text == "Transcribing...")
+            {
+                MessageBox.Show("Please record and transcribe your problem first", "Input required", 
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            
+            try
+            {
+                // Disable button during solving
+                SolveVoiceButton.IsEnabled = false;
+                StatusBarText.Text = "Solving problem...";
+                
+                // Solve the problem
+                _lastSolution = await _aiService.SolveProgrammingProblemAsync(
+                    TranscribedTextBox.Text, VoiceWithExplanationCheckBox.IsChecked ?? false);
+                
+                // Update UI
+                StatusBarText.Text = "Solution ready";
+                
+                // Show solution
+                _overlayService.ShowSolution(_lastSolution);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[ERROR] Problem solving error: {ex.Message}");
+                StatusBarText.Text = $"Error: {ex.Message}";
+            }
+            finally
+            {
+                // Re-enable button
+                SolveVoiceButton.IsEnabled = true;
+            }
+        }
+        
         protected override void OnClosed(EventArgs e)
         {
             base.OnClosed(e);
             
             // Освобождаем ресурсы
             _hotkeyManager?.Dispose();
+            
+            // Unsubscribe from recording events
+            if (_audioRecordingService != null)
+            {
+                _audioRecordingService.RecordingCompleted -= OnRecordingCompleted;
+                _audioRecordingService.RecordingTimeUpdated -= OnRecordingTimeUpdated;
+            }
+            
+            // Dispose recognition service
+            _recognizeService?.Dispose();
         }
     }
     

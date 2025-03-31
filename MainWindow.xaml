@@ -190,6 +190,70 @@
                     </ListView>
                 </Grid>
             </TabItem>
+            
+            <!-- New Voice Recognition Tab -->
+            <TabItem Header="Voice Recognition">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    
+                    <TextBlock Grid.Row="0" 
+                               Text="Record your voice to transcribe the problem:" 
+                               TextWrapping="Wrap"
+                               Margin="0,5"/>
+                    
+                    <Grid Grid.Row="1" Margin="0,5">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        
+                        <ProgressBar x:Name="RecordingProgressBar" 
+                                     Height="20" 
+                                     Margin="0,0,10,0"/>
+                        
+                        <TextBlock x:Name="RecordingTimeText" 
+                                   Grid.Column="0"
+                                   Text="00:00" 
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   Foreground="Black"/>
+                        
+                        <Button x:Name="RecordButton" 
+                                Grid.Column="1"
+                                Content="Start Recording" 
+                                Padding="10,5"
+                                Click="RecordButton_Click"/>
+                    </Grid>
+                    
+                    <TextBox Grid.Row="2" 
+                             x:Name="TranscribedTextBox" 
+                             Text="Transcribed text will appear here..."
+                             TextWrapping="Wrap"
+                             AcceptsReturn="True"
+                             Margin="0,5"
+                             VerticalScrollBarVisibility="Auto"/>
+                    
+                    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
+                        <CheckBox x:Name="VoiceWithExplanationCheckBox" 
+                                  Content="Include explanation"
+                                  Margin="0,0,10,0"
+                                  VerticalAlignment="Center"
+                                  IsChecked="True"/>
+                        
+                        <Button Grid.Row="3" 
+                                x:Name="SolveVoiceButton" 
+                                Content="Solve Problem"
+                                Click="SolveVoiceButton_Click"
+                                Padding="10,5"
+                                Margin="0,5"/>
+                    </StackPanel>
+                </Grid>
+            </TabItem>
         </TabControl>
         
         <!-- Статус бар -->

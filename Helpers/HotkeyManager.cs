@@ -61,13 +61,9 @@ namespace AIInterviewAssistant.WPF.Helpers
             }
         }
 
-        public void UpdateHotkeys(AppSettings settings)
+        public void ClearHotkeys()
         {
-            // Clear existing hotkeys and register new ones from settings
             _hotkeyActions.Clear();
-            
-            // Now register specific hotkeys from settings
-            // Implementations will be added by the calling code
         }
 
         private void OnKeyPressed(object sender, KeyboardHookEventArgs e)

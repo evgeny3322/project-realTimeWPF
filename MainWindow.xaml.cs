@@ -49,8 +49,8 @@ namespace AIInterviewAssistant.WPF
             // Get hotkey settings from application properties
             var settings = AppSettings.LoadFromApplicationProperties();
 
-            _hotkeyManager.RegisterHotkey(settings.TakeScreenshotHotkey, CaptureButton_Click);
-            _hotkeyManager.RegisterHotkey(settings.ShowSolutionHotkey, ShowLastSolution); // Change this line
+            _hotkeyManager.RegisterHotkey(settings.TakeScreenshotHotkey, () => CaptureButton_Click(null, null));
+            _hotkeyManager.RegisterHotkey(settings.ShowSolutionHotkey, () => ShowLastSolution());
 
             _hotkeyManager.KeyPressed += (s, e) => Debug.WriteLine($"Key Pressed: {e.Data.KeyCode}");
 

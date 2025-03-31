@@ -1,10 +1,11 @@
 using AIInterviewAssistant.WPF.Models;
+using System;
 using System.Threading.Tasks;
 using System.Windows.Media.Imaging;
 
 namespace AIInterviewAssistant.WPF.Services.Interfaces
 {
-    public interface IScreenCaptureService
+    public interface IScreenCaptureService : IDisposable
     {
         /// <summary>
         /// Captures the current screen as a bitmap

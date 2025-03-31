@@ -39,30 +39,30 @@ namespace AIInterviewAssistant.WPF.Services
                     Directory.CreateDirectory(tempFolder);
 
                 _outputFilePath = Path.Combine(tempFolder, $"recording_{DateTime.Now:yyyyMMdd_HHmmss}.wav");
-                
+
                 _waveIn = new WaveInEvent
                 {
                     WaveFormat = new WaveFormat(16000, 1)
                 };
 
                 _waveWriter = new WaveFileWriter(_outputFilePath, _waveIn.WaveFormat);
-                
+
                 _waveIn.DataAvailable += OnDataAvailable;
                 _waveIn.RecordingStopped += OnRecordingStopped;
-                
+
                 _recordingCancellation = new CancellationTokenSource();
-                
+
                 _isRecording = true;
                 _waveIn.StartRecording();
-                
+
                 Debug.WriteLine($"[INFO] Recording started to {_outputFilePath}");
-                
+
                 // Start a timer to update recording time
                 _ = UpdateRecordingTimeAsync(_recordingCancellation.Token);
-                
+
                 // Auto-stop recording after max length
                 _ = Task.Delay(_maxRecordLengthMs, _recordingCancellation.Token)
-                    .ContinueWith(t => 
+                    .ContinueWith(t =>
                     {
                         if (!t.IsCanceled && _isRecording)
                         {
@@ -81,12 +81,12 @@ namespace AIInterviewAssistant.WPF.Services
         private async Task UpdateRecordingTimeAsync(CancellationToken cancellationToken)
         {
             var startTime = DateTime.Now;
-            
+
             while (!cancellationToken.IsCancellationRequested && _isRecording)
             {
                 var elapsed = DateTime.Now - startTime;
                 RecordingTimeUpdated?.Invoke(this, elapsed);
-                
+
                 try
                 {
                     await Task.Delay(100, cancellationToken);
@@ -118,7 +118,7 @@ namespace AIInterviewAssistant.WPF.Services
         private void OnRecordingStopped(object sender, StoppedEventArgs e)
         {
             CleanupRecording();
-            
+
             if (e.Exception != null)
             {
                 Debug.WriteLine($"[ERROR] Recording stopped with error: {e.Exception.Message}");
@@ -133,7 +133,7 @@ namespace AIInterviewAssistant.WPF.Services
         private void CleanupRecording()
         {
             _isRecording = false;
-            
+
             if (_recordingCancellation != null)
             {
                 try
@@ -144,7 +144,7 @@ namespace AIInterviewAssistant.WPF.Services
                 }
                 catch { }
             }
-            
+
             if (_waveIn != null)
             {
                 _waveIn.DataAvailable -= OnDataAvailable;
@@ -152,7 +152,7 @@ namespace AIInterviewAssistant.WPF.Services
                 _waveIn.Dispose();
                 _waveIn = null;
             }
-            
+
             if (_waveWriter != null)
             {
                 _waveWriter.Dispose();

@@ -1,150 +1,157 @@
+using AIInterviewAssistant.WPF.Models;
 using AIInterviewAssistant.WPF.Services.Interfaces;
 using System;
-using System.Collections.Generic;
-using System.Net.Http;
-using System.Text;
-using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Diagnostics;
+using System.Text;
+using System.Net.Http;
+using System.Text.Json;
+using System.Net;
+using System.Security.Authentication;
 
 namespace AIInterviewAssistant.WPF.Services
 {
     public class GigaChatService : IAIService
     {
-        private const string OAuthUrl = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth";
-        private const string ChatCompletionsUrl = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions";
+        private HttpClient _httpClient;
+        private string _authToken;
+        private bool _isAuthenticated;
+        private readonly Regex _codeBlockRegex = new Regex(@"```(?:[\w\-+#]*\n)?([\s\S]*?)```", RegexOptions.Compiled);
         
-        private string _accessToken;
-        private DateTime _lastAuthTime = DateTime.MinValue;
-        private readonly object _lockObject = new object();
-        
-        // Класс для десериализации ответа с токеном
-        private class TokenResponse
+        private class ChatMessage
         {
-            public string access_token { get; set; }
-            public long expires_at { get; set; }
+            public string Role { get; set; }
+            public string Content { get; set; }
         }
         
-        // Классы для десериализации ответа API
-        private class CompletionResponse
+        private class ChatRequest
         {
-            public Choice[] choices { get; set; }
-            
-            public class Choice
+            public ChatMessage[] Messages { get; set; }
+            public double Temperature { get; set; }
+            public int MaxTokens { get; set; }
+        }
+        
+        private class ChatChoice
+        {
+            public ChatMessage Message { get; set; }
+        }
+        
+        private class ChatResponse
+        {
+            public ChatChoice[] Choices { get; set; }
+        }
+        
+        public GigaChatService()
+        {
+            _isAuthenticated = false;
+    
+            // Настройка для работы с SSL
+            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls13;
+            ServicePointManager.ServerCertificateValidationCallback = 
+                (sender, certificate, chain, sslPolicyErrors) => true;
+    
+            // Создаем HttpClientHandler с отключенной проверкой сертификатов
+            var handler = new HttpClientHandler
             {
-                public Message message { get; set; }
-                public string finish_reason { get; set; }
-                public int index { get; set; }
-            }
-            
-            public class Message
-            {
-                public string role { get; set; }
-                public string content { get; set; }
-            }
+                // Используем правильное свойство: ServerCertificateCustomValidationCallback вместо ServerCertificateValidationCallback
+                ServerCertificateCustomValidationCallback = (sender, cert, chain, sslPolicyErrors) => true
+            };
+    
+            // Убираем SslProtocols, это может вызвать проблемы
+            // handler.SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13;
+    
+            _httpClient = new HttpClient(handler);
+            _httpClient.Timeout = TimeSpan.FromSeconds(60);
         }
         
         public async Task<bool> AuthAsync()
         {
             try
             {
-                // Получаем данные аутентификации из настроек приложения
+                // Получаем настройки из Application.Current.Properties
                 string clientId = Application.Current.Properties["GigaChatClientId"] as string;
                 string clientSecret = Application.Current.Properties["GigaChatClientSecret"] as string;
-                string scope = Application.Current.Properties["GigaChatScope"] as string ?? "GIGACHAT_API_PERS";
+                string scope = Application.Current.Properties["GigaChatScope"] as string;
                 
-                // Логируем информацию о настройках для отладки
-                Debug.WriteLine($"[DEBUG] Auth settings - ClientID: {clientId}, Secret: {clientSecret?.Substring(0, 4)}***, Scope: {scope}");
-                
-                // Проверяем наличие необходимых данных
-                if (string.IsNullOrWhiteSpace(clientId))
+                if (string.IsNullOrWhiteSpace(clientId) || string.IsNullOrWhiteSpace(clientSecret))
                 {
-                    Debug.WriteLine("[ERROR] ClientId is empty");
-                    MessageBox.Show("ClientId отсутствует или пустой.", "Ошибка авторизации", MessageBoxButton.OK, MessageBoxImage.Error);
+                    Debug.WriteLine("[ERROR] GigaChat credentials are empty");
+                    MessageBox.Show("Отсутствуют учетные данные GigaChat. Проверьте настройки.", 
+                        "Ошибка авторизации", MessageBoxButton.OK, MessageBoxImage.Error);
                     return false;
                 }
+
+                // Кодируем учетные данные в Base64 для базовой авторизации
+                string authHeaderValue = Convert.ToBase64String(
+                    Encoding.UTF8.GetBytes($"{clientId}:{clientSecret}"));
                 
-                if (string.IsNullOrWhiteSpace(clientSecret))
+                // Устанавливаем заголовок авторизации
+                _httpClient.DefaultRequestHeaders.Authorization = 
+                    new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", authHeaderValue);
+                
+                // Добавляем заголовок RqUID (уникальный идентификатор запроса)
+                _httpClient.DefaultRequestHeaders.Add("RqUID", Guid.NewGuid().ToString());
+                _httpClient.DefaultRequestHeaders.Accept.Add(
+                    new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
+                
+                // Формируем тело запроса
+                var formContent = new FormUrlEncodedContent(new[]
                 {
-                    Debug.WriteLine("[ERROR] ClientSecret is empty");
-                    MessageBox.Show("ClientSecret отсутствует или пустой.", "Ошибка авторизации", MessageBoxButton.OK, MessageBoxImage.Error);
-                    return false;
-                }
+                    new KeyValuePair<string, string>("scope", scope)
+                });
                 
-                // Формируем Base64 ключ авторизации из client_id и client_secret
-                string authKey = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{clientId}:{clientSecret}"));
-                Debug.WriteLine($"[DEBUG] Base64 Auth Key: {authKey}");
+                // Правильный URL для авторизации
+                var response = await _httpClient.PostAsync(
+                    "https://ngw.devices.sberbank.ru:9443/api/v2/oauth", formContent);
                 
-                // Создаем HTTP клиент с отключенной проверкой сертификата для отладки
-                using (HttpClient client = new HttpClient(GetInsecureHandler()))
+                if (response.IsSuccessStatusCode)
                 {
-                    // Генерируем уникальный RqUID
-                    string rquid = Guid.NewGuid().ToString();
-                    Debug.WriteLine($"[DEBUG] Using RqUID: {rquid}");
+                    var jsonResponse = await response.Content.ReadAsStringAsync();
+                    Debug.WriteLine($"[INFO] Auth response: {jsonResponse}");
                     
-                    // Настраиваем заголовки запроса согласно документации
-                    client.DefaultRequestHeaders.Clear();
-                    client.DefaultRequestHeaders.Add("Authorization", $"Basic {authKey}");
-                    client.DefaultRequestHeaders.Add("Accept", "application/json");
-                    client.DefaultRequestHeaders.Add("RqUID", rquid);
+                    var tokenData = JsonSerializer.Deserialize<JsonElement>(jsonResponse);
                     
-                    // Формируем данные запроса
-                    var content = new FormUrlEncodedContent(new Dictionary<string, string>
+                    if (tokenData.TryGetProperty("access_token", out var token))
                     {
-                        { "scope", scope }
-                    });
-                    
-                    Debug.WriteLine($"[DEBUG] Sending auth request to {OAuthUrl}");
-                    
-                    // Отправляем запрос на авторизацию
-                    HttpResponseMessage response = await client.PostAsync(OAuthUrl, content);
-                    
-                    string responseContent = await response.Content.ReadAsStringAsync();
-                    Debug.WriteLine($"[DEBUG] Response status: {response.StatusCode}");
-                    Debug.WriteLine($"[DEBUG] Response content: {responseContent}");
-                    
-                    // Обрабатываем ответ
-                    if (response.IsSuccessStatusCode)
-                    {
-                        try
-                        {
-                            var tokenData = JsonSerializer.Deserialize<TokenResponse>(responseContent);
-                            
-                            if (tokenData != null && !string.IsNullOrEmpty(tokenData.access_token))
-                            {
-                                _accessToken = tokenData.access_token;
-                                _lastAuthTime = DateTime.Now;
-                                Debug.WriteLine($"[DEBUG] Received access token: {_accessToken.Substring(0, 15)}...");
-                                Debug.WriteLine($"[DEBUG] Token expires at: {tokenData.expires_at}");
-                                return true;
-                            }
-                            else
-                            {
-                                Debug.WriteLine("[ERROR] Token data is null or access_token is empty");
-                                MessageBox.Show("Получен пустой токен от сервера.", "Ошибка авторизации", MessageBoxButton.OK, MessageBoxImage.Error);
-                            }
-                        }
-                        catch (JsonException jsonEx)
-                        {
-                            Debug.WriteLine($"[ERROR] JSON parsing error: {jsonEx.Message}");
-                            MessageBox.Show($"Ошибка разбора ответа сервера: {jsonEx.Message}", "Ошибка JSON", MessageBoxButton.OK, MessageBoxImage.Error);
-                        }
+                        _authToken = token.GetString();
+                        _isAuthenticated = true;
+                        
+                        // Очищаем предыдущие заголовки
+                        _httpClient.DefaultRequestHeaders.Authorization = null;
+                        
+                        // Устанавливаем Bearer токен для будущих запросов
+                        _httpClient.DefaultRequestHeaders.Authorization = 
+                            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _authToken);
+                        
+                        Debug.WriteLine("[INFO] GigaChat успешно авторизован");
+                        return true;
                     }
                     else
                     {
-                        Debug.WriteLine($"[ERROR] Auth failed with status code: {response.StatusCode}");
-                        MessageBox.Show($"Авторизация не удалась. Код: {response.StatusCode}\nОтвет: {responseContent}", "Ошибка авторизации", MessageBoxButton.OK, MessageBoxImage.Error);
+                        Debug.WriteLine("[ERROR] Токен не найден в ответе");
+                        MessageBox.Show("Токен не найден в ответе сервера.",
+                            "Ошибка авторизации", MessageBoxButton.OK, MessageBoxImage.Error);
                     }
                 }
+                else
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    Debug.WriteLine($"[ERROR] Статус код: {response.StatusCode}, ответ: {errorContent}");
+                    MessageBox.Show($"Ошибка авторизации GigaChat. Статус: {response.StatusCode}\nОтвет: {errorContent}",
+                        "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
                 
+                Debug.WriteLine("[ERROR] Не удалось авторизоваться в GigaChat");
                 return false;
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[EXCEPTION] Auth Exception: {ex.Message}");
-                Debug.WriteLine($"[EXCEPTION] Stack trace: {ex.StackTrace}");
-                MessageBox.Show($"Исключение при авторизации: {ex.Message}", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
+                Debug.WriteLine($"[ERROR] Ошибка авторизации GigaChat: {ex.Message}\nStackTrace: {ex.StackTrace}");
+                MessageBox.Show($"Ошибка авторизации GigaChat: {ex.Message}", 
+                    "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
+                _isAuthenticated = false;
                 return false;
             }
         }
@@ -156,115 +163,189 @@ namespace AIInterviewAssistant.WPF.Services
                 return string.Empty;
             }
             
-            // Проверяем наличие токена и его срок действия (токен действует 30 минут)
-            if (string.IsNullOrEmpty(_accessToken) || (DateTime.Now - _lastAuthTime).TotalMinutes > 29)
-            {
-                Debug.WriteLine("[DEBUG] Token is missing or expired, requesting new token");
-                if (!await AuthAsync())
-                {
-                    return "Ошибка авторизации. Проверьте настройки GigaChat.";
-                }
-            }
-            
             try
             {
-                // Создаем HTTP клиент
-                using (HttpClient client = new HttpClient(GetInsecureHandler()))
+                // Проверяем авторизацию
+                if (!_isAuthenticated)
                 {
-                    // Настраиваем заголовки запроса согласно документации
-                    client.DefaultRequestHeaders.Clear();
-                    client.DefaultRequestHeaders.Add("Authorization", $"Bearer {_accessToken}");
-                    client.DefaultRequestHeaders.Add("Accept", "application/json");
-                    
-                    // Формируем данные запроса в формате JSON согласно документации
-                    var requestData = new
+                    if (!await AuthAsync())
                     {
-                        model = "GigaChat",
-                        messages = new[]
-                        {
-                            new { role = "user", content = question }
-                        },
-                        temperature = 0.7,
-                        max_tokens = 2048
-                    };
-                    
-                    string jsonRequest = JsonSerializer.Serialize(requestData);
-                    Debug.WriteLine($"[DEBUG] Request data: {jsonRequest}");
-                    
-                    var content = new StringContent(jsonRequest, Encoding.UTF8, "application/json");
-                    
-                    Debug.WriteLine($"[DEBUG] Sending question to {ChatCompletionsUrl}");
-                    
-                    // Отправляем запрос на генерацию ответа
-                    HttpResponseMessage response = await client.PostAsync(ChatCompletionsUrl, content);
-                    
-                    string responseContent = await response.Content.ReadAsStringAsync();
-                    Debug.WriteLine($"[DEBUG] Response status: {response.StatusCode}");
-                    Debug.WriteLine($"[DEBUG] Response content preview: {(responseContent.Length > 100 ? responseContent.Substring(0, 100) + "..." : responseContent)}");
-                    
-                    // Обрабатываем ответ
-                    if (response.IsSuccessStatusCode)
-                    {
-                        try
-                        {
-                            var completionResponse = JsonSerializer.Deserialize<CompletionResponse>(responseContent);
-                            
-                            if (completionResponse != null && 
-                                completionResponse.choices != null && 
-                                completionResponse.choices.Length > 0)
-                            {
-                                string result = completionResponse.choices[0].message.content;
-                                Debug.WriteLine($"[DEBUG] Successfully parsed response, content length: {result.Length}");
-                                return result;
-                            }
-                            
-                            Debug.WriteLine("[ERROR] No valid choices in completion response");
-                            return "Нет ответа от GigaChat.";
-                        }
-                        catch (JsonException jsonEx)
-                        {
-                            Debug.WriteLine($"[ERROR] JSON parsing error: {jsonEx.Message}");
-                            return $"Ошибка разбора ответа: {jsonEx.Message}";
-                        }
-                    }
-                    else
-                    {
-                        // Если статус 401 (Unauthorized), пробуем обновить токен и повторить запрос
-                        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
-                        {
-                            Debug.WriteLine("[DEBUG] Unauthorized error, trying to refresh token");
-                            if (await AuthAsync())
-                            {
-                                // Рекурсивно вызываем метод снова после обновления токена
-                                return await SendQuestionAsync(question);
-                            }
-                        }
-                        
-                        Debug.WriteLine($"[ERROR] Request failed with status code: {response.StatusCode}");
-                        return $"Ошибка запроса: {response.StatusCode} - {responseContent}";
+                        return "Ошибка авторизации GigaChat. Проверьте настройки.";
                     }
                 }
+                
+                // Отправляем запрос
+                var chatRequest = new ChatRequest
+                {
+                    Messages = new[]
+                    {
+                        new ChatMessage
+                        {
+                            Role = "user",
+                            Content = question
+                        }
+                    },
+                    Temperature = 0.7,
+                    MaxTokens = 1500
+                };
+                
+                var content = new StringContent(
+                    JsonSerializer.Serialize(chatRequest),
+                    Encoding.UTF8,
+                    "application/json");
+                
+                // Правильный URL для запросов API GigaChat
+                var response = await _httpClient.PostAsync(
+                    "https://gigachat.devices.sberbank.ru/api/v1/chat/completions", content);
+                
+                if (response.IsSuccessStatusCode)
+                {
+                    var jsonResponse = await response.Content.ReadAsStringAsync();
+                    Debug.WriteLine($"[INFO] API response: {jsonResponse}");
+                    
+                    var chatResponse = JsonSerializer.Deserialize<ChatResponse>(jsonResponse);
+                    
+                    if (chatResponse != null && chatResponse.Choices != null && chatResponse.Choices.Length > 0)
+                    {
+                        return chatResponse.Choices[0].Message.Content;
+                    }
+                }
+                else
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    Debug.WriteLine($"[ERROR] API error: {response.StatusCode}, response: {errorContent}");
+                }
+                
+                Debug.WriteLine("[ERROR] Пустой ответ от GigaChat");
+                return "Ошибка: Пустой ответ от GigaChat";
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[EXCEPTION] Send question exception: {ex.Message}");
-                Debug.WriteLine($"[EXCEPTION] Stack trace: {ex.StackTrace}");
-                return $"Исключение: {ex.Message}";
+                Debug.WriteLine($"[ERROR] Ошибка отправки запроса GigaChat: {ex.Message}");
+                return $"Ошибка: {ex.Message}";
             }
         }
         
-        // Вспомогательный метод для отключения проверки SSL сертификатов (для отладки)
-        private HttpClientHandler GetInsecureHandler()
+        public async Task<AiResponse> SolveProgrammingProblemAsync(string problem, bool needExplanation)
         {
-            var handler = new HttpClientHandler
+            try
             {
-                ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => 
+                // Проверяем авторизацию
+                if (!_isAuthenticated)
                 {
-                    Debug.WriteLine($"[DEBUG] SSL Certificate validation bypassed, errors: {string.Join(", ", errors)}");
-                    return true;
+                    if (!await AuthAsync())
+                    {
+                        return new AiResponse 
+                        { 
+                            Provider = AiProvider.GigaChat,
+                            Solution = "Ошибка авторизации GigaChat. Проверьте настройки."
+                        };
+                    }
                 }
+                
+                // Формируем запрос в зависимости от типа ответа
+                string promptTemplate = needExplanation
+                    ? "Реши задачу программирования и объясни решение:\n{0}\n\nФормат ответа:\n1. Код решения внутри блока ```\n2. Подробное объяснение алгоритма и кода"
+                    : "Реши задачу программирования (только код решения):\n{0}\n\nВерни ТОЛЬКО код решения внутри блока ```";
+                
+                string prompt = string.Format(promptTemplate, problem);
+                
+                // Отправляем запрос
+                var chatRequest = new ChatRequest
+                {
+                    Messages = new[]
+                    {
+                        new ChatMessage
+                        {
+                            Role = "user",
+                            Content = prompt
+                        }
+                    },
+                    Temperature = 0.2,  // Низкая температура для более точных ответов на технические вопросы
+                    MaxTokens = 2500
+                };
+                
+                var content = new StringContent(
+                    JsonSerializer.Serialize(chatRequest),
+                    Encoding.UTF8,
+                    "application/json");
+                
+                // Правильный URL для API GigaChat
+                var response = await _httpClient.PostAsync(
+                    "https://gigachat.devices.sberbank.ru/api/v1/chat/completions", content);
+                
+                if (response.IsSuccessStatusCode)
+                {
+                    var jsonResponse = await response.Content.ReadAsStringAsync();
+                    Debug.WriteLine($"[INFO] API response: {jsonResponse}");
+                    
+                    var chatResponse = JsonSerializer.Deserialize<ChatResponse>(jsonResponse);
+                    
+                    if (chatResponse != null && chatResponse.Choices != null && chatResponse.Choices.Length > 0)
+                    {
+                        string fullResponse = chatResponse.Choices[0].Message.Content;
+                        return ParseProgrammingResponse(fullResponse, problem, needExplanation);
+                    }
+                }
+                else
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    Debug.WriteLine($"[ERROR] API error: {response.StatusCode}, response: {errorContent}");
+                }
+                
+                Debug.WriteLine("[ERROR] Пустой ответ от GigaChat");
+                return new AiResponse 
+                { 
+                    Provider = AiProvider.GigaChat,
+                    Solution = "Ошибка: Пустой ответ от GigaChat",
+                    OriginalPrompt = problem
+                };
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[ERROR] Ошибка решения задачи GigaChat: {ex.Message}");
+                return new AiResponse 
+                { 
+                    Provider = AiProvider.GigaChat,
+                    Solution = $"Ошибка: {ex.Message}",
+                    OriginalPrompt = problem
+                };
+            }
+        }
+        
+        private AiResponse ParseProgrammingResponse(string response, string originalPrompt, bool isExplanation)
+        {
+            var aiResponse = new AiResponse
+            {
+                Provider = AiProvider.GigaChat,
+                OriginalPrompt = originalPrompt,
+                IsExplanation = isExplanation,
+                Timestamp = DateTime.Now
             };
-            return handler;
+            
+            // Ищем блоки кода в ответе
+            var codeBlockMatches = _codeBlockRegex.Matches(response);
+            
+            if (codeBlockMatches.Count > 0)
+            {
+                // Извлекаем первый блок кода как решение
+                aiResponse.Solution = codeBlockMatches[0].Groups[1].Value.Trim();
+                
+                // Если требуется объяснение, то все, что не является блоком кода - это объяснение
+                if (isExplanation)
+                {
+                    // Удаляем все блоки кода из ответа для получения чистого объяснения
+                    string explanation = _codeBlockRegex.Replace(response, "").Trim();
+                    aiResponse.Explanation = explanation;
+                }
+            }
+            else
+            {
+                // Если блоков кода не найдено, считаем весь ответ решением
+                aiResponse.Solution = response.Trim();
+            }
+            
+            return aiResponse;
         }
     }
 }

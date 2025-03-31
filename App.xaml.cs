@@ -4,15 +4,6 @@ namespace AIInterviewAssistant.WPF
 {
     public partial class App : Application
     {
-        // Static entry point
-        [STAThread]
-        public static void Main()
-        {
-            App app = new App();
-            app.InitializeComponent();
-            app.Run();
-        }
-
         protected override void OnStartup(StartupEventArgs e)
         {
             base.OnStartup(e);

@@ -10,141 +10,61 @@ using System.Diagnostics;
 
 namespace AIInterviewAssistant.WPF.Services
 {
-    public class GigaChatService : IAIService
+    public class ClaudeService : IAIService
     {
-        private const string OAuthUrl = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth";
-        private const string ChatCompletionsUrl = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions";
+        private const string ClaudeApiUrl = "https://api.anthropic.com/v1/messages";
         
-        private string _accessToken;
-        private DateTime _lastAuthTime = DateTime.MinValue;
-        private readonly object _lockObject = new object();
-        
-        // Класс для десериализации ответа с токеном
-        private class TokenResponse
-        {
-            public string access_token { get; set; }
-            public long expires_at { get; set; }
-        }
+        private string _apiKey;
+        private readonly HttpClient _httpClient;
         
         // Классы для десериализации ответа API
-        private class CompletionResponse
+        private class ClaudeResponse
         {
-            public Choice[] choices { get; set; }
+            public string id { get; set; }
+            public string type { get; set; }
+            public string role { get; set; }
+            public string model { get; set; }
+            public Content content { get; set; }
             
-            public class Choice
+            public class Content
             {
-                public Message message { get; set; }
-                public string finish_reason { get; set; }
-                public int index { get; set; }
+                public string type { get; set; }
+                public string text { get; set; }
             }
-            
-            public class Message
-            {
-                public string role { get; set; }
-                public string content { get; set; }
-            }
+        }
+        
+        public ClaudeService()
+        {
+            _httpClient = new HttpClient();
+            _httpClient.DefaultRequestHeaders.Add("anthropic-version", "2023-06-01");
+            _httpClient.Timeout = TimeSpan.FromSeconds(60); // Увеличиваем таймаут до 60 секунд
         }
         
         public async Task<bool> AuthAsync()
         {
             try
             {
-                // Получаем данные аутентификации из настроек приложения
-                string clientId = Application.Current.Properties["GigaChatClientId"] as string;
-                string clientSecret = Application.Current.Properties["GigaChatClientSecret"] as string;
-                string scope = Application.Current.Properties["GigaChatScope"] as string ?? "GIGACHAT_API_PERS";
+                // Получаем API ключ из настроек приложения
+                _apiKey = Application.Current.Properties["ClaudeApiKey"] as string;
                 
-                // Логируем информацию о настройках для отладки
-                Debug.WriteLine($"[DEBUG] Auth settings - ClientID: {clientId}, Secret: {clientSecret?.Substring(0, 4)}***, Scope: {scope}");
-                
-                // Проверяем наличие необходимых данных
-                if (string.IsNullOrWhiteSpace(clientId))
+                if (string.IsNullOrWhiteSpace(_apiKey))
                 {
-                    Debug.WriteLine("[ERROR] ClientId is empty");
-                    MessageBox.Show("ClientId отсутствует или пустой.", "Ошибка авторизации", MessageBoxButton.OK, MessageBoxImage.Error);
+                    Debug.WriteLine("[ERROR] Claude API Key is empty");
+                    MessageBox.Show("API ключ Claude отсутствует или пустой.", "Ошибка авторизации", MessageBoxButton.OK, MessageBoxImage.Error);
                     return false;
                 }
                 
-                if (string.IsNullOrWhiteSpace(clientSecret))
-                {
-                    Debug.WriteLine("[ERROR] ClientSecret is empty");
-                    MessageBox.Show("ClientSecret отсутствует или пустой.", "Ошибка авторизации", MessageBoxButton.OK, MessageBoxImage.Error);
-                    return false;
-                }
+                // Устанавливаем API ключ в заголовки
+                _httpClient.DefaultRequestHeaders.Remove("x-api-key");
+                _httpClient.DefaultRequestHeaders.Add("x-api-key", _apiKey);
                 
-                // Формируем Base64 ключ авторизации из client_id и client_secret
-                string authKey = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{clientId}:{clientSecret}"));
-                Debug.WriteLine($"[DEBUG] Base64 Auth Key: {authKey}");
-                
-                // Создаем HTTP клиент с отключенной проверкой сертификата для отладки
-                using (HttpClient client = new HttpClient(GetInsecureHandler()))
-                {
-                    // Генерируем уникальный RqUID
-                    string rquid = Guid.NewGuid().ToString();
-                    Debug.WriteLine($"[DEBUG] Using RqUID: {rquid}");
-                    
-                    // Настраиваем заголовки запроса согласно документации
-                    client.DefaultRequestHeaders.Clear();
-                    client.DefaultRequestHeaders.Add("Authorization", $"Basic {authKey}");
-                    client.DefaultRequestHeaders.Add("Accept", "application/json");
-                    client.DefaultRequestHeaders.Add("RqUID", rquid);
-                    
-                    // Формируем данные запроса
-                    var content = new FormUrlEncodedContent(new Dictionary<string, string>
-                    {
-                        { "scope", scope }
-                    });
-                    
-                    Debug.WriteLine($"[DEBUG] Sending auth request to {OAuthUrl}");
-                    
-                    // Отправляем запрос на авторизацию
-                    HttpResponseMessage response = await client.PostAsync(OAuthUrl, content);
-                    
-                    string responseContent = await response.Content.ReadAsStringAsync();
-                    Debug.WriteLine($"[DEBUG] Response status: {response.StatusCode}");
-                    Debug.WriteLine($"[DEBUG] Response content: {responseContent}");
-                    
-                    // Обрабатываем ответ
-                    if (response.IsSuccessStatusCode)
-                    {
-                        try
-                        {
-                            var tokenData = JsonSerializer.Deserialize<TokenResponse>(responseContent);
-                            
-                            if (tokenData != null && !string.IsNullOrEmpty(tokenData.access_token))
-                            {
-                                _accessToken = tokenData.access_token;
-                                _lastAuthTime = DateTime.Now;
-                                Debug.WriteLine($"[DEBUG] Received access token: {_accessToken.Substring(0, 15)}...");
-                                Debug.WriteLine($"[DEBUG] Token expires at: {tokenData.expires_at}");
-                                return true;
-                            }
-                            else
-                            {
-                                Debug.WriteLine("[ERROR] Token data is null or access_token is empty");
-                                MessageBox.Show("Получен пустой токен от сервера.", "Ошибка авторизации", MessageBoxButton.OK, MessageBoxImage.Error);
-                            }
-                        }
-                        catch (JsonException jsonEx)
-                        {
-                            Debug.WriteLine($"[ERROR] JSON parsing error: {jsonEx.Message}");
-                            MessageBox.Show($"Ошибка разбора ответа сервера: {jsonEx.Message}", "Ошибка JSON", MessageBoxButton.OK, MessageBoxImage.Error);
-                        }
-                    }
-                    else
-                    {
-                        Debug.WriteLine($"[ERROR] Auth failed with status code: {response.StatusCode}");
-                        MessageBox.Show($"Авторизация не удалась. Код: {response.StatusCode}\nОтвет: {responseContent}", "Ошибка авторизации", MessageBoxButton.OK, MessageBoxImage.Error);
-                    }
-                }
-                
-                return false;
+                Debug.WriteLine("[INFO] Claude API ключ установлен успешно");
+                return true;
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[EXCEPTION] Auth Exception: {ex.Message}");
-                Debug.WriteLine($"[EXCEPTION] Stack trace: {ex.StackTrace}");
-                MessageBox.Show($"Исключение при авторизации: {ex.Message}", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
+                Debug.WriteLine($"[ERROR] Ошибка авторизации Claude: {ex.Message}");
+                MessageBox.Show($"Ошибка авторизации Claude: {ex.Message}", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
                 return false;
             }
         }
@@ -156,115 +76,82 @@ namespace AIInterviewAssistant.WPF.Services
                 return string.Empty;
             }
             
-            // Проверяем наличие токена и его срок действия (токен действует 30 минут)
-            if (string.IsNullOrEmpty(_accessToken) || (DateTime.Now - _lastAuthTime).TotalMinutes > 29)
-            {
-                Debug.WriteLine("[DEBUG] Token is missing or expired, requesting new token");
-                if (!await AuthAsync())
-                {
-                    return "Ошибка авторизации. Проверьте настройки GigaChat.";
-                }
-            }
-            
             try
             {
-                // Создаем HTTP клиент
-                using (HttpClient client = new HttpClient(GetInsecureHandler()))
+                // Проверяем наличие API ключа
+                if (string.IsNullOrEmpty(_apiKey))
                 {
-                    // Настраиваем заголовки запроса согласно документации
-                    client.DefaultRequestHeaders.Clear();
-                    client.DefaultRequestHeaders.Add("Authorization", $"Bearer {_accessToken}");
-                    client.DefaultRequestHeaders.Add("Accept", "application/json");
-                    
-                    // Формируем данные запроса в формате JSON согласно документации
-                    var requestData = new
+                    Debug.WriteLine("[ERROR] Claude API Key не установлен");
+                    if (!await AuthAsync())
                     {
-                        model = "GigaChat",
-                        messages = new[]
-                        {
-                            new { role = "user", content = question }
-                        },
-                        temperature = 0.7,
-                        max_tokens = 2048
-                    };
-                    
-                    string jsonRequest = JsonSerializer.Serialize(requestData);
-                    Debug.WriteLine($"[DEBUG] Request data: {jsonRequest}");
-                    
-                    var content = new StringContent(jsonRequest, Encoding.UTF8, "application/json");
-                    
-                    Debug.WriteLine($"[DEBUG] Sending question to {ChatCompletionsUrl}");
-                    
-                    // Отправляем запрос на генерацию ответа
-                    HttpResponseMessage response = await client.PostAsync(ChatCompletionsUrl, content);
-                    
-                    string responseContent = await response.Content.ReadAsStringAsync();
-                    Debug.WriteLine($"[DEBUG] Response status: {response.StatusCode}");
-                    Debug.WriteLine($"[DEBUG] Response content preview: {(responseContent.Length > 100 ? responseContent.Substring(0, 100) + "..." : responseContent)}");
-                    
-                    // Обрабатываем ответ
-                    if (response.IsSuccessStatusCode)
-                    {
-                        try
-                        {
-                            var completionResponse = JsonSerializer.Deserialize<CompletionResponse>(responseContent);
-                            
-                            if (completionResponse != null && 
-                                completionResponse.choices != null && 
-                                completionResponse.choices.Length > 0)
-                            {
-                                string result = completionResponse.choices[0].message.content;
-                                Debug.WriteLine($"[DEBUG] Successfully parsed response, content length: {result.Length}");
-                                return result;
-                            }
-                            
-                            Debug.WriteLine("[ERROR] No valid choices in completion response");
-                            return "Нет ответа от GigaChat.";
-                        }
-                        catch (JsonException jsonEx)
-                        {
-                            Debug.WriteLine($"[ERROR] JSON parsing error: {jsonEx.Message}");
-                            return $"Ошибка разбора ответа: {jsonEx.Message}";
-                        }
+                        return "Ошибка авторизации. Проверьте настройки Claude API.";
                     }
-                    else
+                }
+                
+                // Формируем данные запроса в формате JSON
+                var requestData = new
+                {
+                    model = "claude-3-opus-20240229",
+                    messages = new[]
                     {
-                        // Если статус 401 (Unauthorized), пробуем обновить токен и повторить запрос
-                        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                        new { role = "user", content = question }
+                    },
+                    max_tokens = 4000,
+                    temperature = 0.7
+                };
+                
+                string jsonRequest = JsonSerializer.Serialize(requestData);
+                Debug.WriteLine($"[DEBUG] Claude запрос: {jsonRequest}");
+                
+                var content = new StringContent(jsonRequest, Encoding.UTF8, "application/json");
+                
+                // Устанавливаем API ключ в заголовки для этого запроса
+                _httpClient.DefaultRequestHeaders.Remove("x-api-key");
+                _httpClient.DefaultRequestHeaders.Add("x-api-key", _apiKey);
+                
+                Debug.WriteLine($"[DEBUG] Отправка запроса к Claude API: {ClaudeApiUrl}");
+                
+                // Отправляем запрос на генерацию ответа
+                HttpResponseMessage response = await _httpClient.PostAsync(ClaudeApiUrl, content);
+                
+                string responseContent = await response.Content.ReadAsStringAsync();
+                Debug.WriteLine($"[DEBUG] Статус ответа Claude: {response.StatusCode}");
+                Debug.WriteLine($"[DEBUG] Предпросмотр ответа Claude: {(responseContent.Length > 100 ? responseContent.Substring(0, 100) + "..." : responseContent)}");
+                
+                // Обрабатываем ответ
+                if (response.IsSuccessStatusCode)
+                {
+                    try
+                    {
+                        var claudeResponse = JsonSerializer.Deserialize<ClaudeResponse>(responseContent);
+                        
+                        if (claudeResponse != null && claudeResponse.content != null)
                         {
-                            Debug.WriteLine("[DEBUG] Unauthorized error, trying to refresh token");
-                            if (await AuthAsync())
-                            {
-                                // Рекурсивно вызываем метод снова после обновления токена
-                                return await SendQuestionAsync(question);
-                            }
+                            string result = claudeResponse.content.text;
+                            Debug.WriteLine($"[DEBUG] Успешно получен ответ от Claude, длина: {result.Length}");
+                            return result;
                         }
                         
-                        Debug.WriteLine($"[ERROR] Request failed with status code: {response.StatusCode}");
-                        return $"Ошибка запроса: {response.StatusCode} - {responseContent}";
+                        Debug.WriteLine("[ERROR] Ответ Claude не содержит текста");
+                        return "Нет ответа от Claude.";
                     }
+                    catch (JsonException jsonEx)
+                    {
+                        Debug.WriteLine($"[ERROR] Ошибка разбора JSON от Claude: {jsonEx.Message}");
+                        return $"Ошибка разбора ответа Claude: {jsonEx.Message}";
+                    }
+                }
+                else
+                {
+                    Debug.WriteLine($"[ERROR] Запрос к Claude не удался: {response.StatusCode}");
+                    return $"Ошибка запроса к Claude: {response.StatusCode} - {responseContent}";
                 }
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[EXCEPTION] Send question exception: {ex.Message}");
-                Debug.WriteLine($"[EXCEPTION] Stack trace: {ex.StackTrace}");
-                return $"Исключение: {ex.Message}";
+                Debug.WriteLine($"[ERROR] Исключение при запросе к Claude: {ex.Message}");
+                return $"Исключение при запросе к Claude: {ex.Message}";
             }
-        }
-        
-        // Вспомогательный метод для отключения проверки SSL сертификатов (для отладки)
-        private HttpClientHandler GetInsecureHandler()
-        {
-            var handler = new HttpClientHandler
-            {
-                ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => 
-                {
-                    Debug.WriteLine($"[DEBUG] SSL Certificate validation bypassed, errors: {string.Join(", ", errors)}");
-                    return true;
-                }
-            };
-            return handler;
         }
     }
 }

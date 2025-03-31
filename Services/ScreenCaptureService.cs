@@ -9,12 +9,15 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Media.Imaging;
+using Windows.Media.Ocr;
+using Windows.Graphics.Imaging;
+using System.Diagnostics;
 
 namespace AIInterviewAssistant.WPF.Services
 {
     public class ScreenCaptureService : IScreenCaptureService
     {
-        // Windows API imports for getting cursor position and active window
+        // Windows API imports для определения позиции курсора и активного окна
         [DllImport("user32.dll")]
         private static extern bool GetCursorPos(out POINT lpPoint);
         
@@ -34,11 +37,11 @@ namespace AIInterviewAssistant.WPF.Services
         {
             try
             {
-                // Get screen dimensions
+                // Получаем размеры экрана
                 int screenWidth = (int)SystemParameters.PrimaryScreenWidth;
                 int screenHeight = (int)SystemParameters.PrimaryScreenHeight;
                 
-                // Capture the screen
+                // Создаем скриншот экрана
                 using (Bitmap bitmap = new Bitmap(screenWidth, screenHeight))
                 {
                     using (Graphics g = Graphics.FromImage(bitmap))
@@ -46,13 +49,13 @@ namespace AIInterviewAssistant.WPF.Services
                         g.CopyFromScreen(0, 0, 0, 0, new System.Drawing.Size(screenWidth, screenHeight));
                     }
                     
-                    // Convert to BitmapSource for WPF
+                    // Конвертируем в BitmapSource для WPF
                     return ConvertBitmapToBitmapSource(bitmap);
                 }
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[ERROR] Screen capture failed: {ex.Message}");
+                Debug.WriteLine($"[ERROR] Ошибка захвата экрана: {ex.Message}");
                 return null;
             }
         }
@@ -61,19 +64,19 @@ namespace AIInterviewAssistant.WPF.Services
         {
             try
             {
-                // Capture screen
+                // Создаем скриншот
                 var screenBitmap = CaptureScreen();
                 if (screenBitmap == null)
                     return null;
                 
-                // Get cursor position
+                // Получаем позицию курсора
                 GetCursorPos(out POINT cursorPos);
                 var cursorPosition = new Point(cursorPos.X, cursorPos.Y);
                 
-                // Get active window title
+                // Получаем заголовок активного окна
                 string activeWindowTitle = GetActiveWindowTitle();
                 
-                // Create screenshot data
+                // Создаем объект с данными скриншота
                 var screenshotData = new ScreenshotData
                 {
                     Image = screenBitmap,
@@ -82,28 +85,50 @@ namespace AIInterviewAssistant.WPF.Services
                     Timestamp = DateTime.Now
                 };
                 
-                // Extract text in background
+                // Извлекаем текст в фоновом режиме
                 screenshotData.DetectedText = await ExtractTextFromImageAsync(screenBitmap);
                 
                 return screenshotData;
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[ERROR] Screenshot processing failed: {ex.Message}");
+                Debug.WriteLine($"[ERROR] Ошибка обработки скриншота: {ex.Message}");
                 return null;
             }
         }
         
         public async Task<string> ExtractTextFromImageAsync(BitmapSource image)
         {
-            // For now, we'll use a simple placeholder implementation
-            // In a real implementation, you would use OCR here (like Windows.Media.Ocr or Tesseract)
-            
-            // Simulate a delay for async processing
-            await Task.Delay(500);
-            
-            // Placeholder return - in real implementation you'd extract text from the image
-            return "// This would be the extracted programming problem text";
+            try
+            {
+                // Конвертируем BitmapSource в SoftwareBitmap для OCR
+                var softwareBitmap = await ConvertBitmapSourceToSoftwareBitmapAsync(image);
+                
+                // Инициализируем OCR двигатель
+                var ocrEngine = OcrEngine.TryCreateFromLanguage(new Windows.Globalization.Language("en-US"));
+                if (ocrEngine == null)
+                {
+                    Debug.WriteLine("[ERROR] Не удалось создать OCR двигатель");
+                    return string.Empty;
+                }
+                
+                // Распознаем текст
+                var ocrResult = await ocrEngine.RecognizeAsync(softwareBitmap);
+                
+                // Объединяем результат в одну строку
+                StringBuilder resultText = new StringBuilder();
+                foreach (var line in ocrResult.Lines)
+                {
+                    resultText.AppendLine(line.Text);
+                }
+                
+                return resultText.ToString();
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[ERROR] Ошибка распознавания текста: {ex.Message}");
+                return string.Empty;
+            }
         }
         
         public string SaveScreenshot(ScreenshotData screenshot, string filePath = null)
@@ -113,21 +138,21 @@ namespace AIInterviewAssistant.WPF.Services
                 
             try
             {
-                // Generate a file path if not provided
+                // Генерируем имя файла, если не указано
                 if (string.IsNullOrEmpty(filePath))
                 {
                     string folder = Path.Combine(
                         Environment.GetFolderPath(Environment.SpecialFolder.MyPictures),
                         "AIInterviewAssistant");
                         
-                    // Create directory if it doesn't exist
+                    // Создаем директорию, если не существует
                     if (!Directory.Exists(folder))
                         Directory.CreateDirectory(folder);
                         
                     filePath = Path.Combine(folder, $"Screenshot_{DateTime.Now:yyyyMMdd_HHmmss}.png");
                 }
                 
-                // Save the image
+                // Сохраняем изображение
                 using (var fileStream = new FileStream(filePath, FileMode.Create))
                 {
                     BitmapEncoder encoder = new PngBitmapEncoder();
@@ -139,12 +164,12 @@ namespace AIInterviewAssistant.WPF.Services
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[ERROR] Saving screenshot failed: {ex.Message}");
+                Debug.WriteLine($"[ERROR] Ошибка сохранения скриншота: {ex.Message}");
                 return null;
             }
         }
         
-        #region Helper Methods
+        #region Вспомогательные методы
         
         private BitmapSource ConvertBitmapToBitmapSource(Bitmap bitmap)
         {
@@ -160,6 +185,41 @@ namespace AIInterviewAssistant.WPF.Services
                 
             bitmap.UnlockBits(bitmapData);
             return bitmapSource;
+        }
+        
+        private async Task<SoftwareBitmap> ConvertBitmapSourceToSoftwareBitmapAsync(BitmapSource bitmapSource)
+        {
+            // Сохраняем BitmapSource во временный файл
+            var tempFilePath = Path.Combine(Path.GetTempPath(), $"ocr_temp_{Guid.NewGuid()}.png");
+            
+            using (var fileStream = new FileStream(tempFilePath, FileMode.Create))
+            {
+                BitmapEncoder encoder = new PngBitmapEncoder();
+                encoder.Frames.Add(BitmapFrame.Create(bitmapSource));
+                encoder.Save(fileStream);
+            }
+            
+            try
+            {
+                // Открываем файл как RandomAccessStream
+                using (var stream = await Windows.Storage.StorageFile.GetFileFromPathAsync(tempFilePath))
+                using (var randomAccessStream = await stream.OpenAsync(Windows.Storage.FileAccessMode.Read))
+                {
+                    // Декодируем в SoftwareBitmap
+                    var decoder = await BitmapDecoder.CreateAsync(randomAccessStream);
+                    return await decoder.GetSoftwareBitmapAsync();
+                }
+            }
+            finally
+            {
+                // Удаляем временный файл
+                try
+                {
+                    if (File.Exists(tempFilePath))
+                        File.Delete(tempFilePath);
+                }
+                catch { /* Игнорируем ошибки при удалении временных файлов */ }
+            }
         }
         
         private string GetActiveWindowTitle()

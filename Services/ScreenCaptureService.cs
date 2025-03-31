@@ -2,7 +2,7 @@ using AIInterviewAssistant.WPF.Models;
 using AIInterviewAssistant.WPF.Services.Interfaces;
 using System;
 using System.Drawing;
-using System.Drawing.Imaging;
+using System.Drawing.Imaging; // Explicit import for System.Drawing.Imaging
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -11,7 +11,7 @@ using System.Windows;
 using System.Windows.Media.Imaging;
 using System.Diagnostics;
 using Tesseract;
-using Point = System.Drawing.Point; // Явное указание, какой Point использовать
+using Point = System.Drawing.Point; // Explicit import for System.Drawing.Point
 
 namespace AIInterviewAssistant.WPF.Services
 {
@@ -172,7 +172,8 @@ namespace AIInterviewAssistant.WPF.Services
             {
                 // Сохраняем Bitmap во временный файл
                 string tempFile = Path.Combine(Path.GetTempPath(), $"ocr_temp_{Guid.NewGuid()}.png");
-                bitmap.Save(tempFile, ImageFormat.Png);
+                // Use fully qualified name to resolve ambiguity
+                bitmap.Save(tempFile, System.Drawing.Imaging.ImageFormat.Png);
                 
                 // Загружаем изображение как Pix
                 var pix = Pix.LoadFromFile(tempFile);

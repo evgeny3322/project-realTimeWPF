@@ -8,6 +8,8 @@ using System.Diagnostics;
 using System.Text;
 using System.Net.Http;
 using System.Text.Json;
+using System.Net;
+using System.Security.Authentication;
 
 namespace AIInterviewAssistant.WPF.Services
 {
@@ -44,7 +46,23 @@ namespace AIInterviewAssistant.WPF.Services
         public GigaChatService()
         {
             _isAuthenticated = false;
-            _httpClient = new HttpClient();
+    
+            // Настройка для работы с SSL
+            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls13;
+            ServicePointManager.ServerCertificateValidationCallback = 
+                (sender, certificate, chain, sslPolicyErrors) => true;
+    
+            // Создаем HttpClientHandler с отключенной проверкой сертификатов
+            var handler = new HttpClientHandler
+            {
+                // Используем правильное свойство: ServerCertificateCustomValidationCallback вместо ServerCertificateValidationCallback
+                ServerCertificateCustomValidationCallback = (sender, cert, chain, sslPolicyErrors) => true
+            };
+    
+            // Убираем SslProtocols, это может вызвать проблемы
+            // handler.SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13;
+    
+            _httpClient = new HttpClient(handler);
             _httpClient.Timeout = TimeSpan.FromSeconds(60);
         }
         
@@ -65,36 +83,64 @@ namespace AIInterviewAssistant.WPF.Services
                     return false;
                 }
 
-                // Запрос на авторизацию к GigaChat API
-                var authData = new
+                // Кодируем учетные данные в Base64 для базовой авторизации
+                string authHeaderValue = Convert.ToBase64String(
+                    Encoding.UTF8.GetBytes($"{clientId}:{clientSecret}"));
+                
+                // Устанавливаем заголовок авторизации
+                _httpClient.DefaultRequestHeaders.Authorization = 
+                    new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", authHeaderValue);
+                
+                // Добавляем заголовок RqUID (уникальный идентификатор запроса)
+                _httpClient.DefaultRequestHeaders.Add("RqUID", Guid.NewGuid().ToString());
+                _httpClient.DefaultRequestHeaders.Accept.Add(
+                    new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
+                
+                // Формируем тело запроса
+                var formContent = new FormUrlEncodedContent(new[]
                 {
-                    client_id = clientId,
-                    client_secret = clientSecret,
-                    scope = scope
-                };
+                    new KeyValuePair<string, string>("scope", scope)
+                });
                 
-                var content = new StringContent(
-                    JsonSerializer.Serialize(authData),
-                    Encoding.UTF8,
-                    "application/json");
-                
-                // Здесь должен быть реальный URL для авторизации GigaChat API
-                var response = await _httpClient.PostAsync("https://gigachat.api/v1/auth", content);
+                // Правильный URL для авторизации
+                var response = await _httpClient.PostAsync(
+                    "https://ngw.devices.sberbank.ru:9443/api/v2/oauth", formContent);
                 
                 if (response.IsSuccessStatusCode)
                 {
                     var jsonResponse = await response.Content.ReadAsStringAsync();
-                    // Предполагаем, что API возвращает токен в формате JSON с полем "access_token"
+                    Debug.WriteLine($"[INFO] Auth response: {jsonResponse}");
+                    
                     var tokenData = JsonSerializer.Deserialize<JsonElement>(jsonResponse);
                     
                     if (tokenData.TryGetProperty("access_token", out var token))
                     {
                         _authToken = token.GetString();
                         _isAuthenticated = true;
-                        _httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _authToken);
+                        
+                        // Очищаем предыдущие заголовки
+                        _httpClient.DefaultRequestHeaders.Authorization = null;
+                        
+                        // Устанавливаем Bearer токен для будущих запросов
+                        _httpClient.DefaultRequestHeaders.Authorization = 
+                            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _authToken);
+                        
                         Debug.WriteLine("[INFO] GigaChat успешно авторизован");
                         return true;
                     }
+                    else
+                    {
+                        Debug.WriteLine("[ERROR] Токен не найден в ответе");
+                        MessageBox.Show("Токен не найден в ответе сервера.",
+                            "Ошибка авторизации", MessageBoxButton.OK, MessageBoxImage.Error);
+                    }
+                }
+                else
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    Debug.WriteLine($"[ERROR] Статус код: {response.StatusCode}, ответ: {errorContent}");
+                    MessageBox.Show($"Ошибка авторизации GigaChat. Статус: {response.StatusCode}\nОтвет: {errorContent}",
+                        "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
                 }
                 
                 Debug.WriteLine("[ERROR] Не удалось авторизоваться в GigaChat");
@@ -102,7 +148,7 @@ namespace AIInterviewAssistant.WPF.Services
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[ERROR] Ошибка авторизации GigaChat: {ex.Message}");
+                Debug.WriteLine($"[ERROR] Ошибка авторизации GigaChat: {ex.Message}\nStackTrace: {ex.StackTrace}");
                 MessageBox.Show($"Ошибка авторизации GigaChat: {ex.Message}", 
                     "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
                 _isAuthenticated = false;
@@ -148,18 +194,26 @@ namespace AIInterviewAssistant.WPF.Services
                     Encoding.UTF8,
                     "application/json");
                 
-                // Здесь должен быть реальный URL для API GigaChat
-                var response = await _httpClient.PostAsync("https://gigachat.api/v1/chat/completions", content);
+                // Правильный URL для запросов API GigaChat
+                var response = await _httpClient.PostAsync(
+                    "https://gigachat.devices.sberbank.ru/api/v1/chat/completions", content);
                 
                 if (response.IsSuccessStatusCode)
                 {
                     var jsonResponse = await response.Content.ReadAsStringAsync();
+                    Debug.WriteLine($"[INFO] API response: {jsonResponse}");
+                    
                     var chatResponse = JsonSerializer.Deserialize<ChatResponse>(jsonResponse);
                     
                     if (chatResponse != null && chatResponse.Choices != null && chatResponse.Choices.Length > 0)
                     {
                         return chatResponse.Choices[0].Message.Content;
                     }
+                }
+                else
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    Debug.WriteLine($"[ERROR] API error: {response.StatusCode}, response: {errorContent}");
                 }
                 
                 Debug.WriteLine("[ERROR] Пустой ответ от GigaChat");
@@ -216,12 +270,15 @@ namespace AIInterviewAssistant.WPF.Services
                     Encoding.UTF8,
                     "application/json");
                 
-                // Здесь должен быть реальный URL для API GigaChat
-                var response = await _httpClient.PostAsync("https://gigachat.api/v1/chat/completions", content);
+                // Правильный URL для API GigaChat
+                var response = await _httpClient.PostAsync(
+                    "https://gigachat.devices.sberbank.ru/api/v1/chat/completions", content);
                 
                 if (response.IsSuccessStatusCode)
                 {
                     var jsonResponse = await response.Content.ReadAsStringAsync();
+                    Debug.WriteLine($"[INFO] API response: {jsonResponse}");
+                    
                     var chatResponse = JsonSerializer.Deserialize<ChatResponse>(jsonResponse);
                     
                     if (chatResponse != null && chatResponse.Choices != null && chatResponse.Choices.Length > 0)
@@ -229,6 +286,11 @@ namespace AIInterviewAssistant.WPF.Services
                         string fullResponse = chatResponse.Choices[0].Message.Content;
                         return ParseProgrammingResponse(fullResponse, problem, needExplanation);
                     }
+                }
+                else
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    Debug.WriteLine($"[ERROR] API error: {response.StatusCode}, response: {errorContent}");
                 }
                 
                 Debug.WriteLine("[ERROR] Пустой ответ от GigaChat");

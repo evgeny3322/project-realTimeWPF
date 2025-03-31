@@ -22,6 +22,7 @@ namespace AIInterviewAssistant.WPF
         private WaveFileWriter? _micAudioWriter;
         private bool _inProgress;
         private bool _modelLoaded;
+        private TaskPoolGlobalHook _hook;
         
         public MainWindow()
         {
@@ -32,10 +33,10 @@ namespace AIInterviewAssistant.WPF
             _aiService = new GigaChatService();
             
             // Настройка глобальных хоткеев
-            var hook = new TaskPoolGlobalHook();
-            hook.KeyPressed += OnKeyPressed;
-            hook.KeyReleased += OnKeyReleased;
-            hook.RunAsync();
+            _hook = new TaskPoolGlobalHook();
+            _hook.KeyPressed += OnKeyPressed;
+            _hook.KeyReleased += OnKeyReleased;
+            _hook.RunAsync();
             
             // Инициализация состояния UI
             LoadButton.IsEnabled = true;
@@ -442,7 +443,20 @@ namespace AIInterviewAssistant.WPF
         
         protected override void OnClosed(EventArgs e)
         {
-            base.OnClosed(e);
+            // Остановка и освобождение глобального хука
+            if (_hook != null)
+            {
+                try
+                {
+                    _hook.KeyPressed -= OnKeyPressed;
+                    _hook.KeyReleased -= OnKeyReleased;
+                    _hook.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error disposing hook: {ex.Message}");
+                }
+            }
             
             // Освобождаем ресурсы при закрытии приложения
             if (_recognizeService is IDisposable disposable)
@@ -464,6 +478,8 @@ namespace AIInterviewAssistant.WPF
                 _desktopAudioWriter.Dispose();
                 _desktopAudioWriter = null;
             }
+            
+            base.OnClosed(e);
         }
     }
 }

@@ -24,7 +24,7 @@
         <TextBox Grid.Row="1" x:Name="PositionTextBox" Margin="10,0,10,10"/>
 
         <Label Grid.Row="2" Content="ModelPath" Margin="10,10,10,0"/>
-        <TextBox Grid.Row="3" x:Name="ModelPathTextBox" Margin="10,0,10,10"/>
+        <TextBox Grid.Row="3" x:Name="ModelPathTextBox" Text="D:\vosk-model-ru-0.42\vosk-model-ru-0.42" Margin="10,0,10,10"/>
 
         <Button Grid.Row="4" Content="Load" x:Name="LoadButton" Margin="10" Click="LoadButton_Click"/>
 

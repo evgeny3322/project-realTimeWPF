@@ -4,28 +4,30 @@ namespace AIInterviewAssistant.WPF.Models
 {
     public class AiResponse
     {
-        // The source AI service that generated this response
+        // Источник ответа AI
         public AiProvider Provider { get; set; }
         
-        // The solution code
+        // Код решения
         public string Solution { get; set; } = string.Empty;
         
-        // The explanation of the solution (if available)
+        // Объяснение решения (если доступно)
         public string Explanation { get; set; } = string.Empty;
         
-        // Timestamp when the response was received
+        // Время получения ответа
         public DateTime Timestamp { get; set; } = DateTime.Now;
         
-        // Flag to indicate if this is a solution only or full explanation
+        // Флаг, указывающий, содержит ли ответ объяснение
         public bool IsExplanation { get; set; }
         
-        // The prompt that was sent to the AI service
+        // Исходный запрос, отправленный в AI
         public string OriginalPrompt { get; set; } = string.Empty;
+        
+        // Время выполнения запроса в миллисекундах
+        public long ExecutionTimeMs { get; set; }
     }
     
     public enum AiProvider
     {
-        GigaChat,
-        Claude
+        GigaChat
     }
 }

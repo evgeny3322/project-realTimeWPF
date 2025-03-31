@@ -5,8 +5,9 @@ using AIInterviewAssistant.WPF.UI;
 using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.Threading.Tasks;
 using System.Windows;
-using System.Windows.Media;
+using System.Windows.Media.Animation;
 using Point = System.Drawing.Point;
 
 namespace AIInterviewAssistant.WPF.Services
@@ -14,6 +15,7 @@ namespace AIInterviewAssistant.WPF.Services
     public class OverlayService : IOverlayService
     {
         private OverlayWindow _overlayWindow;
+        private NotificationWindow _notificationWindow;
         private readonly ScreenRecordingDetector _recordingDetector;
         private bool _hideWhenScreenRecording;
 
@@ -28,6 +30,7 @@ namespace AIInterviewAssistant.WPF.Services
             _recordingDetector.StartMonitoring();
 
             InitializeOverlayWindow();
+            InitializeNotificationWindow();
         }
 
         private void InitializeOverlayWindow()
@@ -46,6 +49,9 @@ namespace AIInterviewAssistant.WPF.Services
                         _overlayWindow = new OverlayWindow();
                     };
                     
+                    // Устанавливаем внешний вид
+                    _overlayWindow.UpdateAppearance("#80000000", "#FF00FF00", 12);
+                    
                     Debug.WriteLine("[INFO] Overlay window initialized");
                 }
                 catch (Exception ex)
@@ -53,6 +59,31 @@ namespace AIInterviewAssistant.WPF.Services
                     Debug.WriteLine($"[ERROR] Failed to initialize overlay window: {ex.Message}");
                     MessageBox.Show($"Failed to initialize overlay: {ex.Message}",
                         "Overlay Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            });
+        }
+        
+        private void InitializeNotificationWindow()
+        {
+            // Создаем окно уведомлений в потоке UI
+            Application.Current.Dispatcher.Invoke(() =>
+            {
+                try
+                {
+                    _notificationWindow = new NotificationWindow();
+                    
+                    // Подписываемся на событие закрытия окна
+                    _notificationWindow.Closed += (s, e) =>
+                    {
+                        // Создаем новое окно, если текущее закрыто
+                        _notificationWindow = new NotificationWindow();
+                    };
+                    
+                    Debug.WriteLine("[INFO] Notification window initialized");
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[ERROR] Failed to initialize notification window: {ex.Message}");
                 }
             });
         }
@@ -88,7 +119,7 @@ namespace AIInterviewAssistant.WPF.Services
                     // Если указана позиция, позиционируем окно
                     if (position.HasValue)
                     {
-                        PositionOverlayWindow(position.Value);
+                        _overlayWindow.PositionWindow(position.Value);
                     }
                     
                     Debug.WriteLine($"[INFO] Solution overlay shown for provider: {response.Provider}");
@@ -131,7 +162,7 @@ namespace AIInterviewAssistant.WPF.Services
                     // Если указана позиция, позиционируем окно
                     if (position.HasValue)
                     {
-                        PositionOverlayWindow(position.Value);
+                        _overlayWindow.PositionWindow(position.Value);
                     }
                     
                     Debug.WriteLine($"[INFO] Explanation overlay shown for provider: {response.Provider}");
@@ -161,37 +192,45 @@ namespace AIInterviewAssistant.WPF.Services
                 }
             });
         }
-
-        public void UpdateSettings(AppSettings settings)
+        
+        public void ShowNotification(string message)
         {
-            _hideWhenScreenRecording = settings.HideWhenScreenRecording;
-
+            // Проверяем, не идет ли запись экрана
+            if (_hideWhenScreenRecording && _recordingDetector.IsRecordingDetected)
+            {
+                Debug.WriteLine("[INFO] Screen recording detected, not showing notification");
+                return;
+            }
+            
             Application.Current.Dispatcher.Invoke(() =>
             {
                 try
                 {
-                    if (_overlayWindow != null)
+                    if (_notificationWindow == null)
                     {
-                        _overlayWindow.UpdateAppearance(settings);
-                        Debug.WriteLine("[INFO] Overlay appearance updated");
+                        InitializeNotificationWindow();
                     }
+                    
+                    _notificationWindow.ShowNotification(message);
+                    Debug.WriteLine($"[INFO] Notification shown: {message}");
+                    
+                    // Автоматически скрываем уведомление через 3 секунды
+                    Task.Delay(3000).ContinueWith(_ =>
+                    {
+                        Application.Current.Dispatcher.Invoke(() =>
+                        {
+                            if (_notificationWindow?.IsVisible == true)
+                            {
+                                _notificationWindow.Hide();
+                            }
+                        });
+                    });
                 }
                 catch (Exception ex)
                 {
-                    Debug.WriteLine($"[ERROR] Failed to update overlay settings: {ex.Message}");
+                    Debug.WriteLine($"[ERROR] Failed to show notification: {ex.Message}");
                 }
             });
-        }
-
-        private void PositionOverlayWindow(Point position)
-        {
-            if (_overlayWindow != null)
-            {
-                // Позиционируем окно справа от курсора, но при этом проверяем,
-                // чтобы оно не выходило за границы экрана
-                _overlayWindow.Left = position.X + 20;
-                _overlayWindow.Top = position.Y;
-            }
         }
 
         private void OnRecordingStatusChanged(object sender, bool isRecording)
@@ -199,7 +238,14 @@ namespace AIInterviewAssistant.WPF.Services
             if (_hideWhenScreenRecording && isRecording)
             {
                 HideOverlay();
-                Debug.WriteLine("[INFO] Screen recording detected, overlay hidden");
+                Application.Current.Dispatcher.Invoke(() =>
+                {
+                    if (_notificationWindow?.IsVisible == true)
+                    {
+                        _notificationWindow.Hide();
+                    }
+                });
+                Debug.WriteLine("[INFO] Screen recording detected, overlays hidden");
             }
         }
     }

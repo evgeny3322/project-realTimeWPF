@@ -1,7 +1,9 @@
+using AIInterviewAssistant.WPF.Helpers;
 using AIInterviewAssistant.WPF.Models;
 using System;
 using System.Windows;
 using System.Windows.Media;
+using Point = System.Drawing.Point;
 
 namespace AIInterviewAssistant.WPF.UI
 {
@@ -19,6 +21,7 @@ namespace AIInterviewAssistant.WPF.UI
             this.SourceInitialized += (s, e) =>
             {
                 WindowsApiHelper.MakeWindowClickThrough(this);
+                WindowsApiHelper.MakeWindowTopmost(this);
             };
             
             // Position the window near cursor when shown
@@ -40,6 +43,7 @@ namespace AIInterviewAssistant.WPF.UI
             ExplanationButton.Visibility = string.IsNullOrEmpty(response.Explanation) 
                 ? Visibility.Collapsed 
                 : Visibility.Visible;
+            ExplanationButton.Content = "Show Explanation";
             
             // Show window if not already visible
             if (!this.IsVisible)
@@ -67,15 +71,15 @@ namespace AIInterviewAssistant.WPF.UI
             }
         }
         
-        public void UpdateAppearance(AppSettings settings)
+        public void UpdateAppearance(string backgroundColor, string textColor, int fontSize)
         {
             // Update colors
-            if (TryParseColor(settings.OverlayBackgroundColor, out var bgColor))
+            if (TryParseColor(backgroundColor, out var bgColor))
                 MainBorder.Background = new SolidColorBrush(bgColor);
                 
-            if (TryParseColor(settings.OverlayTextColor, out var textColor))
+            if (TryParseColor(textColor, out var txtColor))
             {
-                var textBrush = new SolidColorBrush(textColor);
+                var textBrush = new SolidColorBrush(txtColor);
                 ProviderLabel.Foreground = textBrush;
                 ContentTextBox.Foreground = textBrush;
                 CopyButton.Foreground = textBrush;
@@ -85,7 +89,7 @@ namespace AIInterviewAssistant.WPF.UI
             }
             
             // Update font size
-            ContentTextBox.FontSize = settings.OverlayTextSize;
+            ContentTextBox.FontSize = fontSize;
         }
         
         private void PositionWindowNearCursor()
@@ -96,6 +100,15 @@ namespace AIInterviewAssistant.WPF.UI
             // Position window to the right of cursor
             this.Left = cursorPosition.X + 20;
             this.Top = cursorPosition.Y;
+            
+            // Make sure the window is visible on screen
+            EnsureWindowIsOnScreen();
+        }
+        
+        public void PositionWindow(Point position)
+        {
+            this.Left = position.X + 20;
+            this.Top = position.Y;
             
             // Make sure the window is visible on screen
             EnsureWindowIsOnScreen();
@@ -178,26 +191,6 @@ namespace AIInterviewAssistant.WPF.UI
                 color = Colors.Transparent;
                 return false;
             }
-        }
-    }
-    
-    // Helper class for Windows API interaction
-    public static class WindowsApiHelper
-    {
-        [System.Runtime.InteropServices.DllImport("user32.dll")]
-        private static extern int SetWindowLong(IntPtr hwnd, int index, int newStyle);
-        
-        [System.Runtime.InteropServices.DllImport("user32.dll")]
-        private static extern int GetWindowLong(IntPtr hwnd, int index);
-        
-        public static void MakeWindowClickThrough(Window window)
-        {
-            // Get window handle
-            IntPtr hwnd = new System.Windows.Interop.WindowInteropHelper(window).Handle;
-            
-            // Make window click-through (transparent to mouse events)
-            int style = GetWindowLong(hwnd, -20); // GWL_EXSTYLE
-            SetWindowLong(hwnd, -20, style | 0x80000 | 0x20); // WS_EX_LAYERED | WS_EX_TRANSPARENT
         }
     }
 }

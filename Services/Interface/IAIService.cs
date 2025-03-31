@@ -1,3 +1,4 @@
+using AIInterviewAssistant.WPF.Models;
 using System.Threading.Tasks;
 
 namespace AIInterviewAssistant.WPF.Services.Interfaces
@@ -16,5 +17,13 @@ namespace AIInterviewAssistant.WPF.Services.Interfaces
         /// <param name="question">Текст вопроса</param>
         /// <returns>Текст ответа от AI</returns>
         Task<string> SendQuestionAsync(string question);
+        
+        /// <summary>
+        /// Отправляет программистскую задачу и получает решение
+        /// </summary>
+        /// <param name="problem">Текст задачи</param>
+        /// <param name="needExplanation">Требуется ли объяснение решения</param>
+        /// <returns>Структурированный ответ от AI</returns>
+        Task<AiResponse> SolveProgrammingProblemAsync(string problem, bool needExplanation);
     }
 }

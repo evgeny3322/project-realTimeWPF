@@ -6,32 +6,32 @@ namespace AIInterviewAssistant.WPF.Services.Interfaces
     public interface IOverlayService
     {
         /// <summary>
-        /// Shows the solution overlay near the cursor
+        /// Показывает решение задачи рядом с курсором
         /// </summary>
-        /// <param name="response">The AI response to display</param>
-        /// <param name="position">Optional position override, if null uses current cursor position</param>
+        /// <param name="response">Ответ AI для отображения</param>
+        /// <param name="position">Позиция для отображения, если null, используется текущая позиция курсора</param>
         void ShowSolution(AiResponse response, Point? position = null);
         
         /// <summary>
-        /// Shows the explanation overlay near the cursor
+        /// Показывает объяснение решения рядом с курсором
         /// </summary>
-        /// <param name="response">The AI response with explanation to display</param>
-        /// <param name="position">Optional position override, if null uses current cursor position</param>
+        /// <param name="response">Ответ AI с объяснением для отображения</param>
+        /// <param name="position">Позиция для отображения, если null, используется текущая позиция курсора</param>
         void ShowExplanation(AiResponse response, Point? position = null);
         
         /// <summary>
-        /// Hides any visible overlays
+        /// Скрывает все видимые оверлеи
         /// </summary>
         void HideOverlay();
         
         /// <summary>
-        /// Updates the overlay's appearance settings
+        /// Показывает уведомление о том, что ответ готов
         /// </summary>
-        /// <param name="settings">The application settings containing overlay appearance</param>
-        void UpdateSettings(AppSettings settings);
+        /// <param name="message">Текст уведомления</param>
+        void ShowNotification(string message);
         
         /// <summary>
-        /// Gets whether the overlay is currently visible
+        /// Получает, видим ли оверлей в настоящее время
         /// </summary>
         bool IsOverlayVisible { get; }
     }

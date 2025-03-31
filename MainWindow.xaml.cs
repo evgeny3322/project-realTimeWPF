@@ -1,485 +1,353 @@
-using System;
-using System.Windows;
+using AIInterviewAssistant.WPF.Helpers;
 using AIInterviewAssistant.WPF.Models;
 using AIInterviewAssistant.WPF.Services;
 using AIInterviewAssistant.WPF.Services.Interfaces;
-using NAudio.Wave;
+using AIInterviewAssistant.WPF.UI;
 using SharpHook;
 using SharpHook.Native;
-using System.Text.Json;
-using System.IO;
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Input;
+using System.Windows.Media.Imaging;
 
 namespace AIInterviewAssistant.WPF
 {
     public partial class MainWindow : Window
     {
-        private readonly IRecognizeService _recognizeService;
         private readonly IAIService _aiService;
-        private IWaveIn _micCapture;
-        private WasapiLoopbackCapture _desktopCapture;
-        private WaveFileWriter? _desktopAudioWriter;
-        private WaveFileWriter? _micAudioWriter;
-        private bool _inProgress;
-        private bool _modelLoaded;
-        private TaskPoolGlobalHook _hook;
-        
+        private readonly IOverlayService _overlayService;
+        private readonly IScreenCaptureService _screenCaptureService;
+        private readonly HotkeyManager _hotkeyManager;
+        private ScreenshotData _lastScreenshot;
+        private AiResponse _lastSolution;
+        private ObservableCollection<HotkeyItem> _hotkeys;
+
         public MainWindow()
         {
             InitializeComponent();
             
-            // Инициализация сервисов
-            _recognizeService = new RecognizeService();
+            // Инициализируем сервисы
             _aiService = new GigaChatService();
+            _overlayService = new OverlayService(true); // Скрывать при записи экрана
+            _screenCaptureService = new ScreenCaptureService();
+            _hotkeyManager = new HotkeyManager();
             
-            // Настройка глобальных хоткеев
-            _hook = new TaskPoolGlobalHook();
-            _hook.KeyPressed += OnKeyPressed;
-            _hook.KeyReleased += OnKeyReleased;
-            _hook.RunAsync();
-            
-            // Инициализация состояния UI
-            LoadButton.IsEnabled = true;
-            SendManuallyButton.IsEnabled = false;
-            StatusLabel.Content = "Ready";
-        }
-
-        private async void LoadButton_Click(object sender, RoutedEventArgs e)
-        {
-            if (string.IsNullOrWhiteSpace(PositionTextBox.Text) || string.IsNullOrWhiteSpace(ModelPathTextBox.Text))
+            // Инициализируем коллекцию горячих клавиш
+            _hotkeys = new ObservableCollection<HotkeyItem>
             {
-                MessageBox.Show("Please fill in both Position and ModelPath fields.", "Input required", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-            
-            try
-            {
-                // В UI потоке отключаем кнопку и обновляем статус
-                LoadButton.IsEnabled = false;
-                StatusLabel.Content = "Проверка авторизации в GigaChat...";
-                
-                // Сначала проверяем авторизацию GigaChat
-                var authSuccess = await _aiService.AuthAsync();
-                
-                // В UI потоке обновляем статус
-                if (!authSuccess)
-                {
-                    Dispatcher.Invoke(() => {
-                        StatusLabel.Content = "Ошибка авторизации в GigaChat. Проверьте настройки.";
-                        LoadButton.IsEnabled = true;
-                    });
-                    return;
+                new HotkeyItem 
+                { 
+                    Action = "Capture Screen", 
+                    Shortcut = "PrintScreen",
+                    KeyCode = KeyCode.VcPrintScreen
+                },
+                new HotkeyItem 
+                { 
+                    Action = "Show Solution", 
+                    Shortcut = "F9",
+                    KeyCode = KeyCode.VcF9
+                },
+                new HotkeyItem 
+                { 
+                    Action = "Show Explanation", 
+                    Shortcut = "F10",
+                    KeyCode = KeyCode.VcF10
                 }
-                
-                // В UI потоке обновляем статус перед загрузкой модели
-                Dispatcher.Invoke(() => {
-                    StatusLabel.Content = "Авторизация в GigaChat успешна. Загрузка модели...";
-                });
-                
-                // Загружаем модель Vosk в отдельном потоке, но не обновляем UI в этом потоке
-                string modelPath = ModelPathTextBox.Text;
-                await Task.Run(() => {
-                    try {
-                        _recognizeService.LoadModel(modelPath);
-                    }
-                    catch (Exception loadEx) {
-                        throw new Exception($"Ошибка загрузки модели: {loadEx.Message}", loadEx);
-                    }
-                });
-                
-                // После загрузки модели обновляем UI в UI потоке
-                Dispatcher.Invoke(() => {
-                    StatusLabel.Content = "Модель загружена. Отправка начального промпта...";
-                });
-                
-                // Отправляем начальный промпт
-                string prompt = string.Format(
-                    Application.Current.Properties["InitialPromptTemplate"] as string ?? 
-                    "Ты профессиональный {0}. Ты проходишь собеседование.", 
-                    PositionTextBox.Text);
-                
-                string response = await _aiService.SendQuestionAsync(prompt);
-                
-                // Обрабатываем ответ и обновляем UI в UI потоке
-                Dispatcher.Invoke(() => {
-                    if (string.IsNullOrWhiteSpace(response) || response.StartsWith("Ошибка"))
-                    {
-                        StatusLabel.Content = $"Не удалось отправить начальный промпт: {response}";
-                        LoadButton.IsEnabled = true;
-                        return;
-                    }
-                    
-                    // Устанавливаем состояние готовности
-                    _modelLoaded = true;
-                    SendManuallyButton.IsEnabled = true;
-                    StatusLabel.Content = "Готово к использованию";
-                    OutputTextBox.Text = "Начальный ответ ИИ:\n" + response;
-                    
-                    // Подготавливаем системы записи
-                    PrepareDesktopRecording();
-                    PrepareMicRecording();
-                });
-            }
-            catch (Exception ex)
-            {
-                // В случае исключения обновляем UI в UI потоке
-                Dispatcher.Invoke(() => {
-                    StatusLabel.Content = $"Ошибка: {ex.Message}";
-                    LoadButton.IsEnabled = true;
-                    _modelLoaded = false;
-                });
-            }
-        }
-
-        private async void SendManuallyButton_Click(object sender, RoutedEventArgs e)
-        {
-            if (!Dispatcher.CheckAccess())
-            {
-                Dispatcher.Invoke(() => SendManuallyButton_Click(sender, e));
-                return;
-            }
+            };
             
-            if (_modelLoaded && !string.IsNullOrWhiteSpace(InputTextBox.Text))
+            HotkeysListView.ItemsSource = _hotkeys;
+            
+            // Регистрируем обработчики горячих клавиш
+            RegisterHotkeys();
+            
+            // Запускаем менеджер горячих клавиш
+            _hotkeyManager.Start();
+            
+            // Обновляем интерфейс
+            UpdateUI();
+        }
+        
+        private void RegisterHotkeys()
+        {
+            // Регистрируем захват экрана
+            _hotkeyManager.RegisterHotkey(KeyCode.VcPrintScreen, async () =>
             {
-                try
+                await CaptureScreenAsync();
+            });
+            
+            // Регистрируем отображение решения
+            _hotkeyManager.RegisterHotkey(KeyCode.VcF9, () =>
+            {
+                if (_lastSolution != null)
                 {
-                    // Отключаем кнопку во время обработки запроса
-                    SendManuallyButton.IsEnabled = false;
-                    StatusLabel.Content = "Отправка запроса...";
-                    
-                    // Отправляем запрос к GigaChat
-                    string response = await _aiService.SendQuestionAsync(InputTextBox.Text);
-                    
-                    // Проверяем ответ и обновляем UI (мы уже в UI потоке)
-                    if (string.IsNullOrWhiteSpace(response) || response.StartsWith("Ошибка"))
+                    _overlayService.ShowSolution(_lastSolution);
+                }
+                else
+                {
+                    _overlayService.ShowNotification("No solution available yet");
+                }
+            });
+            
+            // Регистрируем отображение объяснения
+            _hotkeyManager.RegisterHotkey(KeyCode.VcF10, async () =>
+            {
+                if (_lastSolution != null)
+                {
+                    // Если нет объяснения, запрашиваем его
+                    if (string.IsNullOrEmpty(_lastSolution.Explanation))
                     {
-                        StatusLabel.Content = $"Ошибка получения ответа: {response}";
+                        // Запрашиваем объяснение в фоновом режиме
+                        Task.Run(async () =>
+                        {
+                            try
+                            {
+                                var explanation = await _aiService.SolveProgrammingProblemAsync(
+                                    _lastSolution.OriginalPrompt, true);
+                                
+                                // Обновляем последнее решение
+                                _lastSolution.Explanation = explanation.Explanation;
+                                
+                                // Показываем объяснение
+                                Dispatcher.Invoke(() =>
+                                {
+                                    _overlayService.ShowExplanation(_lastSolution);
+                                });
+                            }
+                            catch (Exception ex)
+                            {
+                                Debug.WriteLine($"[ERROR] Failed to get explanation: {ex.Message}");
+                                Dispatcher.Invoke(() =>
+                                {
+                                    _overlayService.ShowNotification("Failed to get explanation");
+                                });
+                            }
+                        });
                     }
                     else
                     {
-                        OutputTextBox.Text = response;
-                        StatusLabel.Content = "Ответ получен";
+                        _overlayService.ShowExplanation(_lastSolution);
                     }
                 }
-                catch (Exception ex)
+                else
                 {
-                    StatusLabel.Content = $"Исключение: {ex.Message}";
+                    _overlayService.ShowNotification("No solution available yet");
                 }
-                finally
-                {
-                    // Всегда включаем кнопку обратно
-                    SendManuallyButton.IsEnabled = true;
-                }
-            }
+            });
         }
         
-        private async Task RecognizeSpeechAsync(string audioFilePath)
+        private async Task CaptureScreenAsync()
         {
             try
             {
-                // Обновляем UI в UI потоке
-                await Dispatcher.InvokeAsync(() => {
-                    StatusLabel.Content = "Распознавание речи...";
-                });
+                UpdateStatus("Capturing screen...");
                 
-                // Выполняем распознавание речи в фоновом потоке
-                string result = await Task.Run(() => _recognizeService.RecognizeSpeechAsync(audioFilePath));
+                // Показываем уведомление
+                _overlayService.ShowNotification("Capturing screen...");
                 
-                // Обрабатываем результат в UI потоке
-                await Dispatcher.InvokeAsync(async () => {
-                    try
+                // Захватываем скриншот
+                _lastScreenshot = await _screenCaptureService.CaptureAndProcessScreenAsync();
+                
+                if (_lastScreenshot != null)
+                {
+                    // Обновляем интерфейс
+                    Dispatcher.Invoke(() =>
                     {
-                        // Десериализуем результат распознавания
-                        var recognizeSpeech = JsonSerializer.Deserialize<RecognizeSpeechDto>(result);
-                        
-                        if (recognizeSpeech != null && !string.IsNullOrWhiteSpace(recognizeSpeech.Text))
-                        {
-                            InputTextBox.Text = recognizeSpeech.Text;
-                            
-                            // Если есть текст, отправляем его в AI
-                            if (_modelLoaded && SendManuallyButton.IsEnabled)
-                            {
-                                SendManuallyButton_Click(this, new RoutedEventArgs());
-                            }
-                        }
-                        else
-                        {
-                            StatusLabel.Content = "Распознавание не дало результатов";
-                        }
-                    }
-                    catch (JsonException jsonEx)
-                    {
-                        StatusLabel.Content = $"Ошибка десериализации: {jsonEx.Message}";
-                    }
-                });
+                        ScreenshotImage.Source = _lastScreenshot.Image;
+                        ExtractedTextBox.Text = _lastScreenshot.DetectedText;
+                        StatusBarText.Text = "Screenshot captured";
+                    });
+                    
+                    // Автоматически решаем задачу
+                    await SolveCapturedProblemAsync();
+                }
+                else
+                {
+                    UpdateStatus("Failed to capture screenshot");
+                }
             }
             catch (Exception ex)
             {
-                // Обрабатываем исключения в UI потоке
-                await Dispatcher.InvokeAsync(() => {
-                    StatusLabel.Content = $"Ошибка распознавания: {ex.Message}";
-                });
+                Debug.WriteLine($"[ERROR] Screen capture error: {ex.Message}");
+                UpdateStatus($"Error: {ex.Message}");
+            }
+        }
+        
+        private async Task SolveCapturedProblemAsync()
+        {
+            if (_lastScreenshot == null || string.IsNullOrWhiteSpace(_lastScreenshot.DetectedText))
+            {
+                _overlayService.ShowNotification("No text to solve");
+                return;
+            }
+            
+            try
+            {
+                // Показываем уведомление
+                _overlayService.ShowNotification("Solving problem...");
+                UpdateStatus("Solving problem...");
+                
+                // Засекаем время начала
+                var startTime = DateTime.Now;
+                
+                // Решаем задачу
+                _lastSolution = await _aiService.SolveProgrammingProblemAsync(
+                    _lastScreenshot.DetectedText, WithExplanationCheckBox.IsChecked ?? false);
+                
+                // Вычисляем время выполнения
+                _lastSolution.ExecutionTimeMs = (long)(DateTime.Now - startTime).TotalMilliseconds;
+                
+                // Обновляем статус
+                UpdateStatus($"Solution ready ({_lastSolution.ExecutionTimeMs / 1000.0:F1} sec)");
+                
+                // Показываем уведомление
+                _overlayService.ShowNotification("Solution ready! Press F9 to view");
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[ERROR] Problem solving error: {ex.Message}");
+                UpdateStatus($"Error: {ex.Message}");
+                _overlayService.ShowNotification("Failed to solve problem");
+            }
+        }
+        
+        private async void AuthButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                // Отключаем кнопку на время авторизации
+                AuthButton.IsEnabled = false;
+                StatusTextBlock.Text = "Authenticating...";
+                
+                // Авторизуемся
+                bool success = await _aiService.AuthAsync();
+                
+                // Обновляем интерфейс
+                if (success)
+                {
+                    StatusTextBlock.Text = "Ready";
+                    StatusBarText.Text = "GigaChat authenticated successfully";
+                }
+                else
+                {
+                    StatusTextBlock.Text = "Authentication failed";
+                    StatusBarText.Text = "GigaChat authentication failed";
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[ERROR] Authentication error: {ex.Message}");
+                StatusTextBlock.Text = "Error";
+                StatusBarText.Text = $"Error: {ex.Message}";
             }
             finally
             {
-                // Пытаемся удалить временный файл
-                try
-                {
-                    if (File.Exists(audioFilePath))
-                    {
-                        File.Delete(audioFilePath);
-                    }
-                }
-                catch
-                {
-                    // Игнорируем ошибки при удалении временных файлов
-                }
+                // Включаем кнопку обратно
+                AuthButton.IsEnabled = true;
             }
         }
         
-        public void OnKeyPressed(object? sender, KeyboardHookEventArgs e)
+        private async void SolveButton_Click(object sender, RoutedEventArgs e)
         {
-            if (!_modelLoaded)
+            if (string.IsNullOrWhiteSpace(ProblemTextBox.Text))
+            {
+                MessageBox.Show("Please enter a problem description", "Input required", 
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
-        
-            // Все операции с UI элементами должны выполняться в UI потоке
-            Dispatcher.Invoke(() => {
-                switch (e.Data.KeyCode)
-                {
-                    case KeyCode.VcLeft:
-                        // Record audio desktop
-                        if (_inProgress)
-                            break;
-                
-                        _inProgress = true;
-                        PrepareDesktopRecording();
-                        var outputDesktopFilePath = GetTempFileName();
-                        _desktopAudioWriter = new WaveFileWriter(outputDesktopFilePath, _desktopCapture.WaveFormat);
-                        _desktopCapture.DataAvailable += (sender, e) =>
-                        {
-                            if (_desktopAudioWriter == null)
-                                return;
-                                
-                            _desktopAudioWriter.Write(e.Buffer, 0, e.BytesRecorded);
-                            if (_desktopAudioWriter.Position > _desktopCapture.WaveFormat.AverageBytesPerSecond * 
-                                (int)Application.Current.Properties["MaximumRecordLengthInSeconds"])
-                            {
-                                _desktopCapture.StopRecording();
-                            }
-                        };
-
-                        _desktopCapture.RecordingStopped += async (sender, e) =>
-                        {
-                            string filePath = outputDesktopFilePath;
-                            
-                            try
-                            {
-                                if (_desktopAudioWriter != null)
-                                {
-                                    await _desktopAudioWriter.DisposeAsync();
-                                    _desktopAudioWriter = null;
-                                }
-                                
-                                if (_desktopCapture != null)
-                                {
-                                    _desktopCapture.Dispose();
-                                }
-                                
-                                // Обновляем статус в UI потоке
-                                await Dispatcher.InvokeAsync(() => {
-                                    StatusLabel.Content = "Обработка аудио с рабочего стола...";
-                                });
-                                
-                                // Выполняем распознавание
-                                await RecognizeSpeechAsync(filePath);
-                            }
-                            catch (Exception ex)
-                            {
-                                await Dispatcher.InvokeAsync(() => {
-                                    StatusLabel.Content = $"Ошибка обработки записи: {ex.Message}";
-                                });
-                            }
-                        };
-
-                        _desktopCapture.StartRecording();
-                        StatusLabel.Content = "Запись аудио с рабочего стола...";
-                        break;
-                    
-                    case KeyCode.VcRight:
-                        // Record audio mic
-                        if (_inProgress)
-                            break;
-                
-                        _inProgress = true;
-                        PrepareMicRecording();
-                        var outputMicFilePath = GetTempFileName();
-                        _micAudioWriter = new WaveFileWriter(outputMicFilePath, _micCapture.WaveFormat);
-                        _micCapture.DataAvailable += (sender, e) =>
-                        {
-                            if (_micAudioWriter == null)
-                                return;
-                                
-                            _micAudioWriter.Write(e.Buffer, 0, e.BytesRecorded);
-                            if (_micAudioWriter.Position > _micCapture.WaveFormat.AverageBytesPerSecond * 
-                                (int)Application.Current.Properties["MaximumRecordLengthInSeconds"])
-                            {
-                                _micCapture.StopRecording();
-                            }
-                        };
-
-                        _micCapture.RecordingStopped += async (sender, e) =>
-                        {
-                            string filePath = outputMicFilePath;
-                            
-                            try
-                            {
-                                if (_micAudioWriter != null)
-                                {
-                                    await _micAudioWriter.DisposeAsync();
-                                    _micAudioWriter = null;
-                                }
-                                
-                                if (_micCapture != null)
-                                {
-                                    _micCapture.Dispose();
-                                }
-                                
-                                // Обновляем статус в UI потоке
-                                await Dispatcher.InvokeAsync(() => {
-                                    StatusLabel.Content = "Обработка аудио с микрофона...";
-                                });
-                                
-                                // Выполняем распознавание
-                                await RecognizeSpeechAsync(filePath);
-                            }
-                            catch (Exception ex)
-                            {
-                                await Dispatcher.InvokeAsync(() => {
-                                    StatusLabel.Content = $"Ошибка обработки записи: {ex.Message}";
-                                });
-                            }
-                        };
-
-                        _micCapture.StartRecording();
-                        StatusLabel.Content = "Запись аудио с микрофона...";
-                        break;
-                }
-            });
-        }
-
-        public void OnKeyReleased(object? sender, KeyboardHookEventArgs e)
-        {
-            if (!_modelLoaded)
-                return;
+            }
             
-            // Все операции с UI элементами должны выполняться в UI потоке
-            Dispatcher.Invoke(() => {
-                switch (e.Data.KeyCode)
-                {
-                    case KeyCode.VcLeft:
-                        // Stop audio desktop
-                        if (_inProgress)
-                        {
-                            _inProgress = false;
-                            _desktopCapture?.StopRecording();
-                        }
-                        break;
-                        
-                    case KeyCode.VcRight:
-                        // Stop audio mic
-                        if (_inProgress)
-                        {
-                            _inProgress = false;
-                            _micCapture?.StopRecording();
-                        }
-                        break;
-                }
+            try
+            {
+                // Отключаем кнопку на время решения
+                SolveButton.IsEnabled = false;
+                StatusBarText.Text = "Solving problem...";
+                
+                // Решаем задачу
+                _lastSolution = await _aiService.SolveProgrammingProblemAsync(
+                    ProblemTextBox.Text, WithExplanationCheckBox.IsChecked ?? false);
+                
+                // Обновляем интерфейс
+                StatusBarText.Text = "Solution ready";
+                
+                // Показываем решение
+                _overlayService.ShowSolution(_lastSolution);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[ERROR] Problem solving error: {ex.Message}");
+                StatusBarText.Text = $"Error: {ex.Message}";
+            }
+            finally
+            {
+                // Включаем кнопку обратно
+                SolveButton.IsEnabled = true;
+            }
+        }
+        
+        private async void CaptureButton_Click(object sender, RoutedEventArgs e)
+        {
+            await CaptureScreenAsync();
+        }
+        
+        private async void SolveCapturedButton_Click(object sender, RoutedEventArgs e)
+        {
+            await SolveCapturedProblemAsync();
+        }
+        
+        private void SettingsButton_Click(object sender, RoutedEventArgs e)
+        {
+            // Здесь будет открываться окно настроек
+            MessageBox.Show("Settings functionality will be implemented later", "Coming Soon", 
+                MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        
+        private void HotkeyItem_DoubleClick(object sender, MouseButtonEventArgs e)
+        {
+            var item = HotkeysListView.SelectedItem as HotkeyItem;
+            if (item != null)
+            {
+                // Здесь будет открываться диалог изменения горячей клавиши
+                MessageBox.Show($"Editing hotkey for '{item.Action}' will be implemented later", 
+                    "Coming Soon", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+        
+        private void UpdateStatus(string message)
+        {
+            Dispatcher.Invoke(() =>
+            {
+                StatusBarText.Text = message;
             });
         }
         
-        private string GetTempFileName()
+        private void UpdateUI()
         {
-            var outputFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "NAudio");
-            Directory.CreateDirectory(outputFolder);
-            return Path.Combine(outputFolder, $"{Guid.NewGuid()}.wav");
-        }
-
-        private void PrepareMicRecording()
-        {
-            DisposeMicCapture();
+            // Изначально отключаем некоторые кнопки
+            SolveCapturedButton.IsEnabled = false;
             
-            var waveIn = new WaveInEvent();
-            waveIn.DeviceNumber = -1; // default system device
-            waveIn.WaveFormat = new WaveFormat(16000, 1);
-            _micCapture = waveIn;
-        }
-
-        private void PrepareDesktopRecording()
-        {
-            DisposeDesktopCapture();
-            
-            var capture = new WasapiLoopbackCapture();
-            capture.WaveFormat = new WaveFormat(16000, 1);
-            _desktopCapture = capture;
-        }
-        
-        private void DisposeMicCapture()
-        {
-            if (_micCapture != null)
+            // Обновляем обработчики событий
+            ScreenshotImage.SourceUpdated += (s, e) =>
             {
-                _micCapture.Dispose();
-                _micCapture = null;
-            }
-        }
-        
-        private void DisposeDesktopCapture()
-        {
-            if (_desktopCapture != null)
-            {
-                _desktopCapture.Dispose();
-                _desktopCapture = null;
-            }
+                SolveCapturedButton.IsEnabled = true;
+            };
         }
         
         protected override void OnClosed(EventArgs e)
         {
-            // Остановка и освобождение глобального хука
-            if (_hook != null)
-            {
-                try
-                {
-                    _hook.KeyPressed -= OnKeyPressed;
-                    _hook.KeyReleased -= OnKeyReleased;
-                    _hook.Dispose();
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Error disposing hook: {ex.Message}");
-                }
-            }
-            
-            // Освобождаем ресурсы при закрытии приложения
-            if (_recognizeService is IDisposable disposable)
-            {
-                disposable.Dispose();
-            }
-            
-            DisposeMicCapture();
-            DisposeDesktopCapture();
-            
-            if (_micAudioWriter != null)
-            {
-                _micAudioWriter.Dispose();
-                _micAudioWriter = null;
-            }
-            
-            if (_desktopAudioWriter != null)
-            {
-                _desktopAudioWriter.Dispose();
-                _desktopAudioWriter = null;
-            }
-            
             base.OnClosed(e);
+            
+            // Освобождаем ресурсы
+            _hotkeyManager?.Dispose();
         }
+    }
+    
+    public class HotkeyItem
+    {
+        public string Action { get; set; }
+        public string Shortcut { get; set; }
+        public KeyCode KeyCode { get; set; }
     }
 }

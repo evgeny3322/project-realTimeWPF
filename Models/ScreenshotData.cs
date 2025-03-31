@@ -6,19 +6,19 @@ namespace AIInterviewAssistant.WPF.Models
 {
     public class ScreenshotData
     {
-        // The raw screenshot image
+        // Изображение скриншота
         public BitmapSource Image { get; set; }
         
-        // The text detected in the image (if any)
+        // Текст, обнаруженный на изображении
         public string DetectedText { get; set; } = string.Empty;
         
-        // The timestamp when the screenshot was taken
+        // Время создания скриншота
         public DateTime Timestamp { get; set; } = DateTime.Now;
         
-        // The mouse position at the time of capture
+        // Позиция курсора в момент захвата
         public Point CursorPosition { get; set; }
         
-        // The active window title at time of capture
+        // Заголовок активного окна в момент захвата
         public string ActiveWindowTitle { get; set; } = string.Empty;
     }
 }

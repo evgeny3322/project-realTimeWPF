@@ -31,6 +31,6 @@ namespace AIInterviewAssistant.WPF.Services.Interfaces
         /// <param name="screenshot">The screenshot to save</param>
         /// <param name="filePath">Optional file path, if null a temp file will be created</param>
         /// <returns>The path to the saved file</returns>
-        string SaveScreenshot(ScreenshotData screenshot, string filePath = null);
+        string SaveScreenshot(ScreenshotData screenshot, string? filePath = null);
     }
 }

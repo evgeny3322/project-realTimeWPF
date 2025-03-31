@@ -63,7 +63,8 @@ namespace AIInterviewAssistant.WPF.UI
             this.Top = screenHeight - this.ActualHeight - 20;
         }
         
-        public void Hide()
+        // Используем ключевое слово new для явного указания, что мы переопределяем метод
+        public new void Hide()
         {
             // Создаем анимацию исчезновения
             DoubleAnimation fadeOutAnimation = new DoubleAnimation

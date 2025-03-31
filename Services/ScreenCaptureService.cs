@@ -11,6 +11,7 @@ using System.Windows;
 using System.Windows.Media.Imaging;
 using System.Diagnostics;
 using Tesseract;
+using Point = System.Drawing.Point; // Явное указание, какой Point использовать
 
 namespace AIInterviewAssistant.WPF.Services
 {
@@ -32,7 +33,7 @@ namespace AIInterviewAssistant.WPF.Services
             public int Y;
         }
 
-        private readonly TesseractEngine _tesseractEngine;
+        private readonly TesseractEngine? _tesseractEngine;
         private readonly string _tessdataPath;
         private bool _isOcrInitialized;
         
@@ -86,7 +87,7 @@ namespace AIInterviewAssistant.WPF.Services
             catch (Exception ex)
             {
                 Debug.WriteLine($"[ERROR] Ошибка захвата экрана: {ex.Message}");
-                return null;
+                return null!;
             }
         }
         
@@ -97,7 +98,7 @@ namespace AIInterviewAssistant.WPF.Services
                 // Создаем скриншот
                 var screenBitmap = CaptureScreen();
                 if (screenBitmap == null)
-                    return null;
+                    return null!;
                 
                 // Получаем позицию курсора
                 GetCursorPos(out POINT cursorPos);
@@ -123,13 +124,13 @@ namespace AIInterviewAssistant.WPF.Services
             catch (Exception ex)
             {
                 Debug.WriteLine($"[ERROR] Ошибка обработки скриншота: {ex.Message}");
-                return null;
+                return null!;
             }
         }
         
         private string ExtractTextFromImage(BitmapSource image)
         {
-            if (!_isOcrInitialized)
+            if (!_isOcrInitialized || _tesseractEngine == null)
             {
                 Debug.WriteLine("[WARN] OCR is not initialized, skipping text extraction");
                 return string.Empty;
@@ -140,12 +141,22 @@ namespace AIInterviewAssistant.WPF.Services
                 // Конвертируем BitmapSource в Bitmap для Tesseract
                 Bitmap bitmap = BitmapSourceToBitmap(image);
                 
-                using (var page = _tesseractEngine.Process(bitmap))
+                // Конвертируем Bitmap в Pix, который требуется для Tesseract
+                using (var pix = ConvertBitmapToPix(bitmap))
                 {
-                    // Получаем распознанный текст
-                    string text = page.GetText();
-                    Debug.WriteLine($"[INFO] OCR extracted {text.Length} characters");
-                    return text;
+                    if (pix == null)
+                    {
+                        Debug.WriteLine("[ERROR] Failed to convert bitmap to Pix format");
+                        return string.Empty;
+                    }
+                    
+                    using (var page = _tesseractEngine.Process(pix))
+                    {
+                        // Получаем распознанный текст
+                        string text = page.GetText();
+                        Debug.WriteLine($"[INFO] OCR extracted {text.Length} characters");
+                        return text;
+                    }
                 }
             }
             catch (Exception ex)
@@ -155,15 +166,45 @@ namespace AIInterviewAssistant.WPF.Services
             }
         }
 
+        private Pix ConvertBitmapToPix(Bitmap bitmap)
+        {
+            try
+            {
+                // Сохраняем Bitmap во временный файл
+                string tempFile = Path.Combine(Path.GetTempPath(), $"ocr_temp_{Guid.NewGuid()}.png");
+                bitmap.Save(tempFile, ImageFormat.Png);
+                
+                // Загружаем изображение как Pix
+                var pix = Pix.LoadFromFile(tempFile);
+                
+                // Удаляем временный файл
+                try 
+                { 
+                    File.Delete(tempFile); 
+                }
+                catch 
+                { 
+                    // Игнорируем ошибки при удалении временного файла
+                }
+                
+                return pix;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[ERROR] Failed to convert bitmap to Pix: {ex.Message}");
+                return null!;
+            }
+        }
+
         public async Task<string> ExtractTextFromImageAsync(BitmapSource image)
         {
             return await Task.Run(() => ExtractTextFromImage(image));
         }
         
-        public string SaveScreenshot(ScreenshotData screenshot, string filePath = null)
+        public string SaveScreenshot(ScreenshotData screenshot, string? filePath = null)
         {
             if (screenshot?.Image == null)
-                return null;
+                return null!;
                 
             try
             {
@@ -194,7 +235,7 @@ namespace AIInterviewAssistant.WPF.Services
             catch (Exception ex)
             {
                 Debug.WriteLine($"[ERROR] Ошибка сохранения скриншота: {ex.Message}");
-                return null;
+                return null!;
             }
         }
         

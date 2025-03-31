@@ -40,7 +40,7 @@ namespace AIInterviewAssistant.WPF.Services
 
         public ScreenCaptureService()
         {
-            // Путь к папке с данными для Tesseract (можно изменить на нужный)
+            // Путь к папке с данными для Tesseract
             _tessdataPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tessdata");
 
             InitializeTesseract();
@@ -50,8 +50,24 @@ namespace AIInterviewAssistant.WPF.Services
         {
             try
             {
-                // Если папка с данными Tesseract существует, инициализируем OCR
-                if (Directory.Exists(_tessdataPath))
+                // Проверяем наличие языковых файлов
+                string[] requiredLanguageFiles = new[] {
+                    Path.Combine(_tessdataPath, "eng.traineddata"),
+                    Path.Combine(_tessdataPath, "rus.traineddata")
+                };
+
+                bool allFilesExist = true;
+                foreach (var langFile in requiredLanguageFiles)
+                {
+                    if (!File.Exists(langFile))
+                    {
+                        Debug.WriteLine($"[ERROR] Language file not found: {langFile}");
+                        allFilesExist = false;
+                    }
+                }
+
+                // Если все файлы существуют, инициализируем OCR
+                if (allFilesExist)
                 {
                     _tesseractEngine = new TesseractEngine(
                         _tessdataPath,
@@ -64,7 +80,8 @@ namespace AIInterviewAssistant.WPF.Services
                 else
                 {
                     _isOcrInitialized = false;
-                    Debug.WriteLine("[WARN] Tesseract tessdata path not found: " + _tessdataPath);
+                    _tesseractEngine = null;
+                    Debug.WriteLine("[WARN] Not all language files are present");
                 }
             }
             catch (Exception ex)
@@ -89,10 +106,7 @@ namespace AIInterviewAssistant.WPF.Services
                     using (Graphics g = Graphics.FromImage(bitmap))
                     {
                         g.CopyFromScreen(
-                            0,
-                            0,
-                            0,
-                            0,
+                            0, 0, 0, 0, 
                             new System.Drawing.Size(screenWidth, screenHeight)
                         );
                     }
@@ -134,7 +148,7 @@ namespace AIInterviewAssistant.WPF.Services
                 };
 
                 // Извлекаем текст в фоновом режиме
-                screenshotData.DetectedText = await Task.Run(() => ExtractTextFromImage(screenBitmap));
+                screenshotData.DetectedText = await ExtractTextFromImageAsync(screenBitmap);
 
                 return screenshotData;
             }
@@ -145,6 +159,11 @@ namespace AIInterviewAssistant.WPF.Services
             }
         }
 
+        public async Task<string> ExtractTextFromImageAsync(BitmapSource image)
+        {
+            return await Task.Run(() => ExtractTextFromImage(image));
+        }
+
         private string ExtractTextFromImage(BitmapSource image)
         {
             if (image == null)
@@ -153,10 +172,9 @@ namespace AIInterviewAssistant.WPF.Services
                 return string.Empty;
             }
 
-            // Проверяем существование и доступность tessdata
-            if (!Directory.Exists(_tessdataPath))
+            if (!_isOcrInitialized || _tesseractEngine == null)
             {
-                Debug.WriteLine($"[ERROR] Tesseract data path not found: {_tessdataPath}");
+                Debug.WriteLine("[WARN] OCR is not initialized or Tesseract engine is null");
                 return string.Empty;
             }
 
@@ -165,39 +183,15 @@ namespace AIInterviewAssistant.WPF.Services
                 // Конвертируем BitmapSource в Bitmap для Tesseract
                 Bitmap bitmap = BitmapSourceToBitmap(image);
 
-                // Безопасная инициализация Tesseract
-                using (var tesseractEngine = SafeInitializeTesseract())
+                // Конвертируем Bitmap в Pix
+                using (var pix = ConvertBitmapToPix(bitmap))
                 {
-                    if (tesseractEngine == null)
+                    // Обработка распознавания
+                    using (var page = _tesseractEngine.Process(pix))
                     {
-                        Debug.WriteLine("[ERROR] Failed to initialize Tesseract engine");
-                        return string.Empty;
-                    }
-
-                    // Конвертируем Bitmap в Pix
-                    using (var pix = SafeConvertBitmapToPix(bitmap))
-                    {
-                        if (pix == null)
-                        {
-                            Debug.WriteLine("[ERROR] Failed to convert bitmap to Pix");
-                            return string.Empty;
-                        }
-
-                        try
-                        {
-                            using (var page = tesseractEngine.Process(pix))
-                            {
-                                string text = page.GetText()?.Trim() ?? string.Empty;
-
-                                Debug.WriteLine($"[INFO] OCR extracted {text.Length} characters");
-                                return text;
-                            }
-                        }
-                        catch (Exception processingEx)
-                        {
-                            Debug.WriteLine($"[ERROR] Tesseract processing error: {processingEx.Message}");
-                            return string.Empty;
-                        }
+                        string text = page.GetText()?.Trim() ?? string.Empty;
+                        Debug.WriteLine($"[INFO] OCR extracted {text.Length} characters");
+                        return text;
                     }
                 }
             }
@@ -208,64 +202,31 @@ namespace AIInterviewAssistant.WPF.Services
             }
         }
 
-        private TesseractEngine? SafeInitializeTesseract()
-        {
-            try
-            {
-                // Проверяем наличие языковых файлов
-                string[] requiredLanguageFiles = new[] {
-            Path.Combine(_tessdataPath, "eng.traineddata"),
-            Path.Combine(_tessdataPath, "rus.traineddata")
-        };
-
-                foreach (var langFile in requiredLanguageFiles)
-                {
-                    if (!File.Exists(langFile))
-                    {
-                        Debug.WriteLine($"[ERROR] Language file not found: {langFile}");
-                        return null;
-                    }
-                }
-
-                // Безопасная инициализация
-                return new TesseractEngine(
-                    _tessdataPath,
-                    "eng+rus",
-                    EngineMode.Default
-                );
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"[ERROR] Tesseract initialization failed: {ex.Message}");
-                return null;
-            }
-        }
-
-        private Pix? SafeConvertBitmapToPix(Bitmap bitmap)
+        private Pix ConvertBitmapToPix(Bitmap bitmap)
         {
             if (bitmap == null)
             {
                 Debug.WriteLine("[ERROR] Null bitmap passed to conversion");
-                return null;
+                return null!;
             }
 
             string tempFile = Path.Combine(
-                Path.GetTempPath(),
+                Path.GetTempPath(), 
                 $"ocr_temp_{Guid.NewGuid()}.png"
             );
 
             try
             {
                 // Сохраняем bitmap с повышенным качеством
-                bitmap.Save(tempFile, ImageFormat.Png);
+                bitmap.Save(tempFile, System.Drawing.Imaging.ImageFormat.Png);
 
-                // Загружаем Pix с обработкой ошибок
+                // Загружаем изображение как Pix
                 var pix = Pix.LoadFromFile(tempFile);
 
                 // Удаляем временный файл
-                try
-                {
-                    File.Delete(tempFile);
+                try 
+                { 
+                    File.Delete(tempFile); 
                 }
                 catch (Exception deleteEx)
                 {
@@ -276,58 +237,18 @@ namespace AIInterviewAssistant.WPF.Services
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[ERROR] Bitmap to Pix conversion failed: {ex.Message}");
-
+                Debug.WriteLine($"[ERROR] Failed to convert bitmap to Pix: {ex.Message}");
+                
                 // Очищаем временный файл если он остался
-                try
-                {
-                    if (File.Exists(tempFile))
-                        File.Delete(tempFile);
+                try 
+                { 
+                    if (File.Exists(tempFile)) 
+                        File.Delete(tempFile); 
                 }
                 catch { }
 
-                return null;
-            }
-        }
-
-        private Pix ConvertBitmapToPix(Bitmap bitmap)
-        {
-            try
-            {
-                // Сохраняем Bitmap во временный файл
-                string tempFile = Path.Combine(
-                    Path.GetTempPath(),
-                    $"ocr_temp_{Guid.NewGuid()}.png"
-                );
-
-                // Use fully qualified name to resolve ambiguity
-                bitmap.Save(tempFile, System.Drawing.Imaging.ImageFormat.Png);
-
-                // Загружаем изображение как Pix
-                var pix = Pix.LoadFromFile(tempFile);
-
-                // Удаляем временный файл
-                try
-                {
-                    File.Delete(tempFile);
-                }
-                catch
-                {
-                    // Игнорируем ошибки при удалении временного файла
-                }
-
-                return pix;
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"[ERROR] Failed to convert bitmap to Pix: {ex.Message}");
                 return null!;
             }
-        }
-
-        public async Task<string> ExtractTextFromImageAsync(BitmapSource image)
-        {
-            return await Task.Run(() => ExtractTextFromImage(image));
         }
 
         public string SaveScreenshot(ScreenshotData screenshot, string? filePath = null)
@@ -373,7 +294,6 @@ namespace AIInterviewAssistant.WPF.Services
         }
 
         #region Вспомогательные методы
-
         private BitmapSource ConvertBitmapToBitmapSource(Bitmap bitmap)
         {
             var bitmapData = bitmap.LockBits(
@@ -412,7 +332,12 @@ namespace AIInterviewAssistant.WPF.Services
                 System.Drawing.Imaging.PixelFormat.Format32bppPArgb
             );
 
-            source.CopyPixels(Int32Rect.Empty, data.Scan0, data.Height * data.Stride, data.Stride);
+            source.CopyPixels(
+                Int32Rect.Empty, 
+                data.Scan0, 
+                data.Height * data.Stride, 
+                data.Stride
+            );
 
             bitmap.UnlockBits(data);
             return bitmap;
@@ -430,11 +355,9 @@ namespace AIInterviewAssistant.WPF.Services
 
             return string.Empty;
         }
-
         #endregion
 
         #region IDisposable Implementation
-
         public void Dispose()
         {
             Dispose(true);
@@ -447,7 +370,7 @@ namespace AIInterviewAssistant.WPF.Services
             {
                 if (disposing)
                 {
-                    // Dispose managed resources
+                    // Освобождаем управляемые ресурсы
                     if (_tesseractEngine != null)
                     {
                         _tesseractEngine.Dispose();
@@ -463,7 +386,6 @@ namespace AIInterviewAssistant.WPF.Services
         {
             Dispose(false);
         }
-
         #endregion
     }
 }

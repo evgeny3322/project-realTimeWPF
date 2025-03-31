@@ -191,13 +191,14 @@
                 </Grid>
             </TabItem>
             
-            <!-- New Voice Recognition Tab -->
             <TabItem Header="Voice Recognition">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
                     
@@ -245,13 +246,29 @@
                                   VerticalAlignment="Center"
                                   IsChecked="True"/>
                         
-                        <Button Grid.Row="3" 
-                                x:Name="SolveVoiceButton" 
+                        <Button x:Name="SolveVoiceButton" 
                                 Content="Solve Problem"
                                 Click="SolveVoiceButton_Click"
                                 Padding="10,5"
                                 Margin="0,5"/>
                     </StackPanel>
+
+                    <TextBox Grid.Row="4" 
+                             x:Name="VoiceProblemTypeBox"
+                             Text="Detected Problem Type: None"
+                             IsReadOnly="True"
+                             Margin="0,5"
+                             Visibility="Collapsed"/>
+
+                    <TextBox Grid.Row="5" 
+                             x:Name="VoiceSolutionTextBox" 
+                             Text="Solution will appear here" 
+                             TextWrapping="Wrap"
+                             IsReadOnly="True"
+                             Margin="0,10,0,0"
+                             MaxHeight="300"
+                             Visibility="Collapsed"
+                             VerticalScrollBarVisibility="Auto"/>
                 </Grid>
             </TabItem>
         </TabControl>
